@@ -13,126 +13,203 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Festival {
-  id          String   @id @default(cuid())
-  slug        String   @unique
-  name        String
-  description String?
-  website     String?
-  facebook    String?
-  instagram   String?
-  email       String?
-  phone       String?
-
-  startDate   DateTime
-  endDate     DateTime
-  timezone    String   @default("UTC")
-
-  isPublished Boolean  @default(false)
-  isCancelled Boolean  @default(false)
-
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  // Location
-  venueId     String?
-  venue       Venue?   @relation(fields: [venueId], references: [id])
-  venueCustom String?
-  address     String?
-  city        String?
-  country     String?
-  latitude    Float?
-  longitude   Float?
+model Event {
+  id                    String   @id @default(cuid())
+  slug                  String   @unique
+  name                  String
+  description           String?
+  shortDesc             String?
+  startDate             DateTime
+  endDate               DateTime
+  registrationDeadline  DateTime?
+  status                String   @default("DRAFT")
+  featured              Boolean  @default(false)
+  capacity              Int?
+  venueId               String?
+  venue                 Venue?   @relation(fields: [venueId], references: [id])
+  website               String?
+  registrationUrl       String?
+  imageUrl              String?
+  createdById           String?
+  sourceUrl             String?
+  scrapedAt             DateTime?
+  verified              Boolean  @default(false)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 
   // Relations
-  artists     FestivalArtist[]
-  workshops   Workshop[]
-  socials     SocialEvent[]
+  teachers              EventTeacher[]
+  musicians             EventMusician[]
+  prices                EventPrice[]
+  tags                  EventTag[]
 
-  @@map("festivals")
+  @@map("events")
 }
 
 model Venue {
-  id        String   @id @default(cuid())
-  name      String
-  address   String?
-  city      String?
-  country   String?
-  latitude  Float?
-  longitude Float?
+  id              String   @id @default(cuid())
+  name            String
+  slug            String   @unique
+  address         String?
+  city            String?
+  state           String?
+  country         String?
+  postalCode      String?
+  latitude        Float?
+  longitude       Float?
+  website         String?
+  phone           String?
+  email           String?
+  capacity        Int?
+  description     String?
+  hasParking      Boolean  @default(false)
+  hasAirCon       Boolean  @default(false)
+  hasWifi         Boolean  @default(false)
+  wheelchairAccess Boolean @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
-  festivals Festival[]
+  events          Event[]
 
   @@map("venues")
 }
 
-model Artist {
+model Teacher {
+  id              String   @id @default(cuid())
+  name            String
+  slug            String   @unique
+  bio             String?
+  avatar          String?
+  verified        Boolean  @default(false)
+  yearsActive     Int?
+  website         String?
+  email           String?
+  specializations String[]
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  events          EventTeacher[]
+  specialties     TeacherSpecialty[]
+
+  @@map("teachers")
+}
+
+model Musician {
+  id            String   @id @default(cuid())
+  name          String
+  slug          String   @unique
+  bio           String?
+  avatar        String?
+  verified      Boolean  @default(false)
+  instruments   String[]
+  yearsActive   Int?
+  website       String?
+  email         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relations
+  events        EventMusician[]
+  genres        MusicianGenre[]
+
+  @@map("musicians")
+}
+
+// Junction tables
+model EventTeacher {
+  id          String  @id @default(cuid())
+  eventId     String
+  teacherId   String
+  role        String?
+  workshops   String[]
+  level       String?
+
+  event       Event   @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  teacher     Teacher @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, teacherId])
+  @@map("event_teachers")
+}
+
+model EventMusician {
+  id          String   @id @default(cuid())
+  eventId     String
+  musicianId  String
+  role        String?
+  setTimes    String[]
+
+  event       Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  musician    Musician @relation(fields: [musicianId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, musicianId])
+  @@map("event_musicians")
+}
+
+model EventPrice {
+  id          String   @id @default(cuid())
+  eventId     String
+  type        String
+  amount      Float
+  currency    String
+  deadline    DateTime?
+  description String?
+  available   Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  event       Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@map("event_prices")
+}
+
+model EventTag {
   id        String   @id @default(cuid())
-  name      String
-  slug      String   @unique
-  bio       String?
-  website   String?
-  facebook  String?
-  instagram String?
-
+  eventId   String
+  tag       String
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
 
-  festivals FestivalArtist[]
-  workshops Workshop[]
+  event     Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
 
-  @@map("artists")
+  @@unique([eventId, tag])
+  @@map("event_tags")
 }
 
-model FestivalArtist {
-  id        String @id @default(cuid())
-  festival  Festival @relation(fields: [festivalId], references: [id], onDelete: Cascade)
-  artist    Artist   @relation(fields: [artistId], references: [id], onDelete: Cascade)
+model TeacherSpecialty {
+  id         String   @id @default(cuid())
+  teacherId  String
+  specialty  String
+  createdAt  DateTime @default(now())
 
-  festivalId String
-  artistId   String
+  teacher    Teacher @relation(fields: [teacherId], references: [id], onDelete: Cascade)
 
-  @@unique([festivalId, artistId])
-  @@map("festival_artists")
+  @@unique([teacherId, specialty])
+  @@map("teacher_specialties")
 }
 
-model Workshop {
+model MusicianGenre {
+  id         String   @id @default(cuid())
+  musicianId String
+  genre      String
+  createdAt  DateTime @default(now())
+
+  musician   Musician @relation(fields: [musicianId], references: [id], onDelete: Cascade)
+
+  @@unique([musicianId, genre])
+  @@map("musician_genres")
+}
+
+// Rate limiting table
+model RateLimit {
   id          String   @id @default(cuid())
-  title       String
-  description String?
-  level       String?  @default("mixed")
-
-  startTime   DateTime
-  endTime     DateTime
-
-  festival    Festival @relation(fields: [festivalId], references: [id], onDelete: Cascade)
-  artist      Artist?   @relation(fields: [artistId], references: [id], onDelete: SetNull)
-
-  festivalId String
-  artistId   String?
-
+  clientId    String   // IP address or user ID
+  endpoint    String   // API endpoint or action type
+  count       Int      // Request count in current window
+  windowStart DateTime // Start of current window
+  windowEnd   DateTime // End of current window
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  @@map("workshops")
-}
-
-model SocialEvent {
-  id          String   @id @default(cuid())
-  title       String
-  description String?
-
-  startTime   DateTime
-  endTime     DateTime
-
-  eventType   String   @default("party")
-
-  festival    Festival @relation(fields: [festivalId], references: [id], onDelete: Cascade)
-
-  festivalId String
-
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  @@map("social_events")
+  @@unique([clientId, endpoint])
+  @@map("rate_limits")
 }

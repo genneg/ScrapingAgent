@@ -18,7 +18,7 @@ export interface DuplicateFestival {
   existingName: string;
   existingDates: { start: Date; end: Date };
   similarity: number;
-  matchType: 'exact' | 'high' | 'medium' | 'low';
+  matchType: 'high' | 'medium' | 'low';
 }
 
 export interface DuplicateVenue {
@@ -26,7 +26,7 @@ export interface DuplicateVenue {
   existingName: string;
   existingAddress: string;
   similarity: number;
-  matchType: 'exact' | 'high' | 'medium';
+  matchType: 'high' | 'medium' | 'low';
 }
 
 export interface DuplicateTeacher {
@@ -126,7 +126,7 @@ export class DuplicateDetectionService {
 
     try {
       // Exact name match
-      const exactMatches = await prisma.events.findMany({
+      const exactMatches = await prisma.event.findMany({
         where: {
           name: {
             equals: data.name,
@@ -135,7 +135,7 @@ export class DuplicateDetectionService {
         },
       });
 
-      exactMatches.forEach(festival => {
+      exactMatches.forEach((festival: { id: string; name: string; startDate: Date; endDate: Date }) => {
         duplicates.push({
           existingId: festival.id,
           existingName: festival.name,
@@ -144,12 +144,12 @@ export class DuplicateDetectionService {
             end: festival.endDate,
           },
           similarity: 1.0,
-          matchType: 'exact',
+          matchType: 'high',
         });
       });
 
       // Similar name match
-      const similarNameMatches = await prisma.events.findMany({
+      const similarNameMatches = await prisma.event.findMany({
         where: {
           AND: [
             {
@@ -172,7 +172,7 @@ export class DuplicateDetectionService {
         if (similarity >= this.SIMILARITY_THRESHOLD.MEDIUM) {
           let matchType: 'high' | 'medium' | 'low' = 'medium';
           if (similarity >= this.SIMILARITY_THRESHOLD.HIGH) matchType = 'high';
-          if (similarity >= this.SIMILARITY_THRESHOLD.EXACT) matchType = 'exact';
+          if (similarity >= this.SIMILARITY_THRESHOLD.EXACT) matchType = 'high';
 
           duplicates.push({
             existingId: festival.id,
@@ -192,7 +192,7 @@ export class DuplicateDetectionService {
         const startDate = new Date(data.startDate);
         const endDate = new Date(data.endDate);
 
-        const dateOverlaps = await prisma.events.findMany({
+        const dateOverlaps = await prisma.event.findMany({
           where: {
             AND: [
               {
@@ -263,7 +263,7 @@ export class DuplicateDetectionService {
 
     try {
       // Exact name match
-      const exactMatches = await prisma.venues.findMany({
+      const exactMatches = await prisma.venue.findMany({
         where: {
           name: {
             equals: data.venue.name,
@@ -278,12 +278,12 @@ export class DuplicateDetectionService {
           existingName: venue.name,
           existingAddress: venue.address || '',
           similarity: 1.0,
-          matchType: 'exact',
+          matchType: 'high',
         });
       });
 
       // Similar name match
-      const similarNameMatches = await prisma.venues.findMany({
+      const similarNameMatches = await prisma.venue.findMany({
         where: {
           AND: [
             {
@@ -302,7 +302,7 @@ export class DuplicateDetectionService {
       });
 
       similarNameMatches.forEach(venue => {
-        const similarity = this.calculateStringSimilarity(data.venue.name!, venue.name);
+        const similarity = this.calculateStringSimilarity(data.venue?.name || '', venue.name);
         if (similarity >= this.SIMILARITY_THRESHOLD.MEDIUM) {
           let matchType: 'high' | 'medium' = 'medium';
           if (similarity >= this.SIMILARITY_THRESHOLD.HIGH) matchType = 'high';
@@ -319,7 +319,7 @@ export class DuplicateDetectionService {
 
       // Address match
       if (data.venue.address) {
-        const addressMatches = await prisma.venues.findMany({
+        const addressMatches = await prisma.venue.findMany({
           where: {
             AND: [
               {
@@ -338,7 +338,7 @@ export class DuplicateDetectionService {
         });
 
         addressMatches.forEach(venue => {
-          const similarity = this.calculateStringSimilarity(data.venue.address!, venue.address || '');
+          const similarity = this.calculateStringSimilarity(data.venue?.address || '', venue.address || '');
           if (similarity >= this.SIMILARITY_THRESHOLD.HIGH) {
             duplicates.push({
               existingId: venue.id,
@@ -367,7 +367,7 @@ export class DuplicateDetectionService {
     try {
       for (const teacher of data.teachers) {
         // Exact name match
-        const exactMatches = await prisma.teachers.findMany({
+        const exactMatches = await prisma.teacher.findMany({
           where: {
             name: {
               equals: teacher.name,
@@ -386,7 +386,7 @@ export class DuplicateDetectionService {
         });
 
         // Similar name match
-        const similarNameMatches = await prisma.teachers.findMany({
+        const similarNameMatches = await prisma.teacher.findMany({
           where: {
             AND: [
               {
@@ -433,7 +433,7 @@ export class DuplicateDetectionService {
     try {
       for (const musician of data.musicians) {
         // Exact name match
-        const exactMatches = await prisma.musicians.findMany({
+        const exactMatches = await prisma.musician.findMany({
           where: {
             name: {
               equals: musician.name,
@@ -452,7 +452,7 @@ export class DuplicateDetectionService {
         });
 
         // Similar name match
-        const similarNameMatches = await prisma.musicians.findMany({
+        const similarNameMatches = await prisma.musician.findMany({
           where: {
             AND: [
               {
@@ -561,7 +561,7 @@ export class DuplicateDetectionService {
 
     // Festival duplicates
     duplicates.festivals.forEach(duplicate => {
-      if (duplicate.matchType === 'exact') {
+      if (duplicate.matchType === 'high') {
         suggestions.push({
           type: 'skip',
           entityType: 'festival',
@@ -580,7 +580,7 @@ export class DuplicateDetectionService {
 
     // Venue duplicates
     duplicates.venues.forEach(duplicate => {
-      if (duplicate.matchType === 'exact') {
+      if (duplicate.matchType === 'high') {
         suggestions.push({
           type: 'merge',
           entityType: 'venue',

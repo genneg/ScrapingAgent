@@ -4,6 +4,9 @@ import { FestivalData } from '@/types';
 import { validationService } from '@/services/validation';
 import { duplicateDetectionService } from '@/services/duplicate-detection';
 import { geocodingService } from '@/services/geocoding';
+import { configService } from '@/lib/config';
+import { DatabaseError, ConflictError, ValidationError, ErrorUtils, BaseError } from '@/lib/errors';
+import { Prisma } from '@prisma/client';
 
 export interface DatabaseImportResult {
   success: boolean;
@@ -61,15 +64,18 @@ export class DatabaseService {
       // Use normalized data
       const normalizedData = validation.normalizedData || data;
 
-      // Check for duplicates
+      // Check for duplicates with optimized query
       const duplicates = await duplicateDetectionService.detectDuplicates(normalizedData);
       if (duplicates.hasDuplicates && duplicates.duplicates.festivals.length > 0) {
-        const exactDuplicate = duplicates.duplicates.festivals.find(d => d.matchType === 'exact');
+        const exactDuplicate = duplicates.duplicates.festivals.find(d => d.matchType === 'high');
         if (exactDuplicate && options.skipDuplicates !== false) {
           result.errors.push(`Exact duplicate found: ${exactDuplicate.existingName}`);
           return result;
         }
       }
+
+      // Performance monitoring
+      const startTime = Date.now();
 
       // If validate only, return here
       if (options.validateOnly) {
@@ -82,6 +88,9 @@ export class DatabaseService {
 
       // Start database transaction
       const importResult = await prisma.$transaction(async (tx) => {
+        // Reset slug cache for this transaction
+        this.slugCache.clear();
+
         const stats = {
           venuesCreated: 0,
           teachersCreated: 0,
@@ -107,7 +116,7 @@ export class DatabaseService {
         );
 
         // Create the main festival event
-        const festival = await tx.events.create({
+        const festival = await tx.event.create({
           data: {
             name: normalizedData.name,
             slug,
@@ -172,36 +181,56 @@ export class DatabaseService {
       result.festivalId = importResult.festivalId;
       result.stats = importResult.stats;
 
+      const duration = Date.now() - startTime;
       logger.info('Festival import completed successfully', {
         festivalId: importResult.festivalId,
         stats: importResult.stats,
+        performance: {
+          durationMs: duration,
+          operationsPerSecond: (
+            (importResult.stats.venuesCreated +
+             importResult.stats.teachersCreated +
+             importResult.stats.musiciansCreated +
+             importResult.stats.pricesCreated +
+             importResult.stats.tagsCreated) / (duration / 1000)
+          ).toFixed(2),
+        },
       });
 
       return result;
 
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Database import failed';
-      logger.error('Festival import failed', { error: errorMessage });
+      const dbError = error instanceof BaseError ? error : new DatabaseError(
+        error instanceof Error ? error.message : 'Database import failed',
+        {
+          cause: error instanceof Error ? error : undefined,
+          context: { festivalName: data.name },
+        }
+      );
 
-      result.errors.push(errorMessage);
+      logger.error('Festival import failed', {
+        error: ErrorUtils.formatForLogging(dbError)
+      });
+
+      result.errors.push(dbError.message);
       return result;
     }
   }
 
   private async createOrUpdateVenue(
-    tx: any,
+    tx: Prisma.TransactionClient,
     venueData: FestivalData['venue'],
     options: { geocode?: boolean }
   ): Promise<string> {
     // Check for existing venue by name and location
-    const existingVenue = await tx.venues.findFirst({
+    const existingVenue = await tx.venue.findFirst({
       where: {
         name: {
-          equals: venueData.name,
+          equals: venueData!.name,
           mode: 'insensitive',
         },
         city: {
-          equals: venueData.city,
+          equals: venueData!.city,
           mode: 'insensitive',
         },
       },
@@ -213,44 +242,44 @@ export class DatabaseService {
     }
 
     // Geocode if requested and coordinates not provided
-    let latitude = venueData.latitude;
-    let longitude = venueData.longitude;
+    let latitude = venueData!.latitude;
+    let longitude = venueData!.longitude;
 
-    if (options.geocode && (!latitude || !longitude) && venueData.address && venueData.city) {
+    if (options.geocode && (!latitude || !longitude) && venueData!.address && venueData!.city) {
       try {
         const geocodeResult = await geocodingService.geocodeAddress(
-          venueData.address,
-          venueData.city,
-          venueData.country
+          venueData!.address,
+          venueData!.city,
+          venueData!.country
         );
 
         if (geocodeResult.success && geocodeResult.latitude && geocodeResult.longitude) {
           latitude = geocodeResult.latitude;
           longitude = geocodeResult.longitude;
           logger.info('Venue geocoded successfully', {
-            venueName: venueData.name,
+            venueName: venueData!.name,
             latitude,
             longitude,
           });
         }
       } catch (error) {
-        logger.warn('Venue geocoding failed', { venueName: venueData.name, error });
+        logger.warn('Venue geocoding failed', { venueName: venueData!.name, error });
       }
     }
 
     // Generate slug
-    const slug = await this.generateUniqueSlug(venueData.name, 'venues', tx);
+    const slug = await this.generateUniqueSlug(venueData!.name, 'venues', tx);
 
     // Create new venue
-    const venue = await tx.venues.create({
+    const venue = await tx.venue.create({
       data: {
-        name: venueData.name,
+        name: venueData!.name,
         slug,
-        address: venueData.address || null,
-        city: venueData.city,
-        state: venueData.state || null,
-        country: venueData.country,
-        postalCode: venueData.postalCode || null,
+        address: venueData!.address || null,
+        city: venueData!.city,
+        state: venueData!.state || null,
+        country: venueData!.country,
+        postalCode: venueData!.postalCode || null,
         latitude,
         longitude,
         website: null,
@@ -270,209 +299,284 @@ export class DatabaseService {
   }
 
   private async createTeachersAndRelations(
-    tx: any,
+    tx: Prisma.TransactionClient,
     teachers: FestivalData['teachers'],
     festivalId: string,
     stats: DatabaseImportResult['stats']
   ): Promise<void> {
+    if (!teachers) return;
+
+    // Batch process: Find all existing teachers in a single query
+    const teacherNames = teachers.map(t => t.name);
+    const existingTeachers = await tx.teacher.findMany({
+      where: {
+        name: {
+          in: teacherNames,
+          mode: 'insensitive',
+        },
+      },
+    });
+
+    const existingTeacherMap = new Map(
+      existingTeachers.map(t => [t.name.toLowerCase(), t])
+    );
+
+    // Batch process: Prepare all operations
+    const teachersToCreate: typeof teachers = [];
+    const eventTeacherRelations: Array<{
+      teacherId: string;
+      teacherData: typeof teachers[0];
+    }> = [];
+
     for (const teacherData of teachers) {
-      try {
-        // Check for existing teacher
-        const existingTeacher = await tx.teachers.findFirst({
-          where: {
-            name: {
-              equals: teacherData.name,
-              mode: 'insensitive',
-            },
-          },
+      const teacherNameLower = teacherData.name.toLowerCase();
+      const existingTeacher = existingTeacherMap.get(teacherNameLower);
+
+      if (existingTeacher) {
+        // Use existing teacher
+        eventTeacherRelations.push({
+          teacherId: existingTeacher.id,
+          teacherData,
         });
 
-        let teacherId: string;
-        if (existingTeacher) {
-          teacherId = existingTeacher.id;
-
-          // Update specializations if needed
-          if (teacherData.specialties && teacherData.specialties.length > 0) {
-            await this.updateTeacherSpecialties(tx, existingTeacher.id, teacherData.specialties);
-          }
-        } else {
-          // Create new teacher
-          const slug = await this.generateUniqueSlug(teacherData.name, 'teachers', tx);
-
-          const teacher = await tx.teachers.create({
-            data: {
-              name: teacherData.name,
-              slug,
-              bio: null,
-              avatar: null,
-              verified: false,
-              yearsActive: null,
-              website: null,
-              email: null,
-              specializations: teacherData.specialties || [],
-            },
-          });
-
-          teacherId = teacher.id;
-          stats.teachersCreated++;
-
-          // Create specializations
-          if (teacherData.specialties && teacherData.specialties.length > 0) {
-            await this.createTeacherSpecialties(tx, teacher.id, teacherData.specialties);
-          }
+        // Queue specialty updates
+        if (teacherData.specialties && teacherData.specialties.length > 0) {
+          await this.updateTeacherSpecialties(tx, existingTeacher.id, teacherData.specialties);
         }
+      } else {
+        // Mark for creation
+        teachersToCreate.push(teacherData);
+      }
+    }
 
-        // Create event-teacher relationship
-        await tx.event_teachers.create({
+    // Batch create new teachers
+    if (teachersToCreate.length > 0) {
+      const teacherCreatePromises = teachersToCreate.map(async (teacherData) => {
+        const slug = await this.generateUniqueSlug(teacherData.name, 'teachers', tx);
+
+        return tx.teacher.create({
           data: {
-            eventId: festivalId,
-            teacherId,
-            role: null,
-            workshops: [],
-            level: null,
+            name: teacherData.name,
+            slug,
+            bio: null,
+            avatar: null,
+            verified: false,
+            yearsActive: null,
+            website: null,
+            email: null,
+            specializations: teacherData.specialties || [],
           },
         });
+      });
 
-      } catch (error) {
-        logger.error('Failed to create teacher relationship', {
-          teacherName: teacherData.name,
-          festivalId,
-          error,
+      const createdTeachers = await Promise.all(teacherCreatePromises);
+      stats.teachersCreated += createdTeachers.length;
+
+      // Prepare event relations for newly created teachers
+      for (let i = 0; i < createdTeachers.length; i++) {
+        eventTeacherRelations.push({
+          teacherId: createdTeachers[i].id,
+          teacherData: teachersToCreate[i],
         });
+
+        // Create specializations for new teachers
+        const specialties = teachersToCreate[i].specialties;
+        if (specialties && specialties.length > 0) {
+          await this.createTeacherSpecialties(tx, createdTeachers[i].id, specialties);
+        }
       }
+    }
+
+    // Batch create event-teacher relationships
+    if (eventTeacherRelations.length > 0) {
+      await tx.eventTeacher.createMany({
+        data: eventTeacherRelations.map(rel => ({
+          eventId: festivalId,
+          teacherId: rel.teacherId,
+          role: null,
+          workshops: [],
+          level: null,
+        })),
+        skipDuplicates: true,
+      });
     }
   }
 
   private async createMusiciansAndRelations(
-    tx: any,
+    tx: Prisma.TransactionClient,
     musicians: FestivalData['musicians'],
     festivalId: string,
     stats: DatabaseImportResult['stats']
   ): Promise<void> {
+    if (!musicians) return;
+
+    // Batch process: Find all existing musicians in a single query
+    const musicianNames = musicians.map(m => m.name);
+    const existingMusicians = await tx.musician.findMany({
+      where: {
+        name: {
+          in: musicianNames,
+          mode: 'insensitive',
+        },
+      },
+    });
+
+    const existingMusicianMap = new Map(
+      existingMusicians.map(m => [m.name.toLowerCase(), m])
+    );
+
+    // Batch process: Prepare all operations
+    const musiciansToCreate: typeof musicians = [];
+    const eventMusicianRelations: Array<{
+      musicianId: string;
+      musicianData: typeof musicians[0];
+    }> = [];
+
     for (const musicianData of musicians) {
-      try {
-        // Check for existing musician
-        const existingMusician = await tx.musicians.findFirst({
-          where: {
-            name: {
-              equals: musicianData.name,
-              mode: 'insensitive',
-            },
-          },
+      const musicianNameLower = musicianData.name.toLowerCase();
+      const existingMusician = existingMusicianMap.get(musicianNameLower);
+
+      if (existingMusician) {
+        // Use existing musician
+        eventMusicianRelations.push({
+          musicianId: existingMusician.id,
+          musicianData,
         });
 
-        let musicianId: string;
-        if (existingMusician) {
-          musicianId = existingMusician.id;
-
-          // Update genres if needed
-          if (musicianData.genre && musicianData.genre.length > 0) {
-            await this.updateMusicianGenres(tx, existingMusician.id, musicianData.genre);
-          }
-        } else {
-          // Create new musician
-          const slug = await this.generateUniqueSlug(musicianData.name, 'musicians', tx);
-
-          const musician = await tx.musicians.create({
-            data: {
-              name: musicianData.name,
-              slug,
-              bio: null,
-              avatar: null,
-              verified: false,
-              instruments: [],
-              yearsActive: null,
-              website: null,
-              email: null,
-            },
-          });
-
-          musicianId = musician.id;
-          stats.musiciansCreated++;
-
-          // Create genres
-          if (musicianData.genre && musicianData.genre.length > 0) {
-            await this.createMusicianGenres(tx, musician.id, musicianData.genre);
-          }
+        // Queue genre updates
+        if (musicianData.genre && musicianData.genre.length > 0) {
+          await this.updateMusicianGenres(tx, existingMusician.id, musicianData.genre);
         }
+      } else {
+        // Mark for creation
+        musiciansToCreate.push(musicianData);
+      }
+    }
 
-        // Create event-musician relationship
-        await tx.event_musicians.create({
+    // Batch create new musicians
+    if (musiciansToCreate.length > 0) {
+      const musicianCreatePromises = musiciansToCreate.map(async (musicianData) => {
+        const slug = await this.generateUniqueSlug(musicianData.name, 'musicians', tx);
+
+        return tx.musician.create({
           data: {
-            eventId: festivalId,
-            musicianId,
-            role: null,
-            setTimes: [],
+            name: musicianData.name,
+            slug,
+            bio: null,
+            avatar: null,
+            verified: false,
+            instruments: [],
+            yearsActive: null,
+            website: null,
+            email: null,
           },
         });
+      });
 
-      } catch (error) {
-        logger.error('Failed to create musician relationship', {
-          musicianName: musicianData.name,
-          festivalId,
-          error,
+      const createdMusicians = await Promise.all(musicianCreatePromises);
+      stats.musiciansCreated += createdMusicians.length;
+
+      // Prepare event relations for newly created musicians
+      for (let i = 0; i < createdMusicians.length; i++) {
+        eventMusicianRelations.push({
+          musicianId: createdMusicians[i].id,
+          musicianData: musiciansToCreate[i],
         });
+
+        // Create genres for new musicians
+        const genres = musiciansToCreate[i].genre;
+        if (genres && genres.length > 0) {
+          await this.createMusicianGenres(tx, createdMusicians[i].id, genres);
+        }
       }
+    }
+
+    // Batch create event-musician relationships
+    if (eventMusicianRelations.length > 0) {
+      await tx.eventMusician.createMany({
+        data: eventMusicianRelations.map(rel => ({
+          eventId: festivalId,
+          musicianId: rel.musicianId,
+          role: null,
+          setTimes: [],
+        })),
+        skipDuplicates: true,
+      });
     }
   }
 
   private async createPrices(
-    tx: any,
+    tx: Prisma.TransactionClient,
     prices: FestivalData['prices'],
     festivalId: string,
     stats: DatabaseImportResult['stats']
   ): Promise<void> {
-    for (const priceData of prices) {
-      try {
-        await tx.event_prices.create({
-          data: {
-            eventId: festivalId,
-            type: priceData.type.toUpperCase() as any,
-            amount: priceData.amount,
-            currency: priceData.currency,
-            deadline: priceData.deadline ? new Date(priceData.deadline) : null,
-            description: priceData.description || null,
-            available: true,
-          },
-        });
+    if (!prices) return;
 
-        stats.pricesCreated++;
-      } catch (error) {
-        logger.error('Failed to create price', {
-          priceType: priceData.type,
-          festivalId,
-          error,
-        });
-      }
+    // Batch create all prices
+    try {
+      const priceData = prices.map(price => ({
+        eventId: festivalId,
+        type: price.type.toUpperCase(),
+        amount: price.amount,
+        currency: price.currency,
+        deadline: price.deadline ? new Date(price.deadline) : null,
+        description: price.description || null,
+        available: true,
+      }));
+
+      await tx.eventPrice.createMany({
+        data: priceData,
+        skipDuplicates: true,
+      });
+
+      stats.pricesCreated += priceData.length;
+    } catch (error) {
+      logger.error('Failed to batch create prices', {
+        festivalId,
+        priceCount: prices.length,
+        error,
+      });
     }
   }
 
   private async createTags(
-    tx: any,
+    tx: Prisma.TransactionClient,
     tags: string[],
     festivalId: string,
     stats: DatabaseImportResult['stats']
   ): Promise<void> {
-    for (const tag of tags) {
-      try {
-        await tx.event_tags.create({
-          data: {
-            eventId: festivalId,
-            tag: tag.toLowerCase(),
-          },
-        });
+    if (!tags) return;
 
-        stats.tagsCreated++;
-      } catch (error) {
-        logger.error('Failed to create tag', { tag, festivalId, error });
-      }
+    // Batch create all tags
+    try {
+      const tagData = tags.map(tag => ({
+        eventId: festivalId,
+        tag: tag.toLowerCase(),
+      }));
+
+      await tx.eventTag.createMany({
+        data: tagData,
+        skipDuplicates: true,
+      });
+
+      stats.tagsCreated += tagData.length;
+    } catch (error) {
+      logger.error('Failed to batch create tags', {
+        festivalId,
+        tagCount: tags.length,
+        error,
+      });
     }
   }
+
+  // Cache for generated slugs within a transaction
+  private slugCache = new Map<string, Set<string>>();
 
   private async generateUniqueSlug(
     baseName: string,
     table: 'events' | 'venues' | 'teachers' | 'musicians',
-    tx: any
+    tx: Prisma.TransactionClient
   ): Promise<string> {
     // Create base slug
     let slug = baseName
@@ -490,20 +594,47 @@ export class DatabaseService {
       slug = table === 'events' ? 'festival' : table.slice(0, -1);
     }
 
+    // Check cache first
+    const cacheKey = table;
+    if (!this.slugCache.has(cacheKey)) {
+      this.slugCache.set(cacheKey, new Set());
+    }
+    const usedSlugs = this.slugCache.get(cacheKey)!;
+
     // Check for uniqueness and add number if needed
     let counter = 1;
     let finalSlug = slug;
     let isUnique = false;
 
     while (!isUnique) {
+      // Check cache first
+      if (usedSlugs.has(finalSlug)) {
+        counter++;
+        finalSlug = `${slug}-${counter}`;
+        continue;
+      }
+
       try {
-        // Check if slug exists
-        const existing = await tx[table].findUnique({
-          where: { slug: finalSlug },
-        });
+        // Check if slug exists using the correct Prisma table names
+        let existing;
+        switch (table) {
+          case 'events':
+            existing = await tx.event.findUnique({ where: { slug: finalSlug } });
+            break;
+          case 'venues':
+            existing = await tx.venue.findUnique({ where: { slug: finalSlug } });
+            break;
+          case 'teachers':
+            existing = await tx.teacher.findUnique({ where: { slug: finalSlug } });
+            break;
+          case 'musicians':
+            existing = await tx.musician.findUnique({ where: { slug: finalSlug } });
+            break;
+        }
 
         if (!existing) {
           isUnique = true;
+          usedSlugs.add(finalSlug);
         } else {
           counter++;
           finalSlug = `${slug}-${counter}`;
@@ -511,6 +642,7 @@ export class DatabaseService {
       } catch (error) {
         // If query fails, assume it's unique
         isUnique = true;
+        usedSlugs.add(finalSlug);
       }
     }
 
@@ -518,35 +650,37 @@ export class DatabaseService {
   }
 
   private async createTeacherSpecialties(
-    tx: any,
+    tx: Prisma.TransactionClient,
     teacherId: string,
     specialties: string[]
   ): Promise<void> {
-    for (const specialty of specialties) {
-      try {
-        await tx.teacher_specialties.create({
-          data: {
-            teacherId,
-            specialty: specialty.toLowerCase(),
-          },
-        });
-      } catch (error) {
-        logger.error('Failed to create teacher specialty', {
-          teacherId,
-          specialty,
-          error,
-        });
-      }
+    // Batch create all specialties
+    try {
+      const specialtyData = specialties.map(specialty => ({
+        teacherId,
+        specialty: specialty.toLowerCase(),
+      }));
+
+      await tx.teacherSpecialty.createMany({
+        data: specialtyData,
+        skipDuplicates: true,
+      });
+    } catch (error) {
+      logger.error('Failed to batch create teacher specialties', {
+        teacherId,
+        specialtyCount: specialties.length,
+        error,
+      });
     }
   }
 
   private async updateTeacherSpecialties(
-    tx: any,
+    tx: Prisma.TransactionClient,
     teacherId: string,
     specialties: string[]
   ): Promise<void> {
     // Delete existing specialties
-    await tx.teacher_specialties.deleteMany({
+    await tx.teacherSpecialty.deleteMany({
       where: { teacherId },
     });
 
@@ -555,35 +689,37 @@ export class DatabaseService {
   }
 
   private async createMusicianGenres(
-    tx: any,
+    tx: Prisma.TransactionClient,
     musicianId: string,
     genres: string[]
   ): Promise<void> {
-    for (const genre of genres) {
-      try {
-        await tx.musician_genres.create({
-          data: {
-            musicianId,
-            genre: genre.toLowerCase(),
-          },
-        });
-      } catch (error) {
-        logger.error('Failed to create musician genre', {
-          musicianId,
-          genre,
-          error,
-        });
-      }
+    // Batch create all genres
+    try {
+      const genreData = genres.map(genre => ({
+        musicianId,
+        genre: genre.toLowerCase(),
+      }));
+
+      await tx.musicianGenre.createMany({
+        data: genreData,
+        skipDuplicates: true,
+      });
+    } catch (error) {
+      logger.error('Failed to batch create musician genres', {
+        musicianId,
+        genreCount: genres.length,
+        error,
+      });
     }
   }
 
   private async updateMusicianGenres(
-    tx: any,
+    tx: Prisma.TransactionClient,
     musicianId: string,
     genres: string[]
   ): Promise<void> {
     // Delete existing genres
-    await tx.musician_genres.deleteMany({
+    await tx.musicianGenre.deleteMany({
       where: { musicianId },
     });
 

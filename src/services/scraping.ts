@@ -1,6 +1,8 @@
 import { anthropic } from '@/lib/anthropic';
 import { logger } from '@/lib/logger';
 import { FestivalData } from '@/types';
+import { configService } from '@/lib/config';
+import { ValidationError, ExternalServiceError, ConfigurationError, ErrorUtils, BaseError } from '@/lib/errors';
 
 export interface ScrapingResult {
   success: boolean;
@@ -34,7 +36,7 @@ export class ScrapingService {
 
       // URL validation
       if (!this.isValidUrl(url)) {
-        throw new Error('Invalid URL format');
+        throw new ValidationError('Invalid URL format', 'url', url);
       }
 
       // Fetch website content with multi-page exploration
@@ -47,7 +49,10 @@ export class ScrapingService {
       metadata.processingTime = Date.now() - startTime;
 
       if (!extractionResult.success || !extractionResult.data) {
-        throw new Error(extractionResult.error || 'Failed to extract festival data');
+        throw new ExternalServiceError(
+          'claude-ai',
+          extractionResult.error || 'Failed to extract festival data'
+        );
       }
 
       // Validate confidence score
@@ -87,8 +92,45 @@ export class ScrapingService {
   private isValidUrl(url: string): boolean {
     try {
       const urlObj = new URL(url);
-      return ['http:', 'https:'].includes(urlObj.protocol);
-    } catch {
+
+      // Check protocol
+      if (!['http:', 'https:'].includes(urlObj.protocol)) {
+        return false;
+      }
+
+      // Prevent localhost and private network access
+      const hostname = urlObj.hostname.toLowerCase();
+      if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname.startsWith('192.168.') ||
+          hostname.startsWith('10.') || hostname.startsWith('172.') || hostname.endsWith('.local')) {
+        return false;
+      }
+
+      // Prevent internal IP addresses
+      if (/^(169\.254\.|169\.254[0-9]|169\.254[0-9][0-9]|169\.254[0-9][0-9][0-9])$/.test(hostname)) {
+        return false;
+      }
+
+      // Prevent non-standard ports
+      const port = parseInt(urlObj.port) || (urlObj.protocol === 'https:' ? 443 : 80);
+      if (port < 1 || port > 65535 || port === 0) {
+        return false;
+      }
+
+      // Check for allowed domains (optional - remove or customize as needed)
+      const allowedDomains = process.env.ALLOWED_SCRAPING_DOMAINS?.split(',') || [];
+      if (allowedDomains.length > 0) {
+        const isAllowed = allowedDomains.some(domain =>
+          hostname === domain || hostname.endsWith(`.${domain}`)
+        );
+        if (!isAllowed) {
+          logger.warn('Domain not in allowed list', { hostname, allowedDomains });
+          return false;
+        }
+      }
+
+      return true;
+    } catch (error) {
+      logger.warn('URL validation failed', { url, error: error instanceof Error ? error.message : 'Unknown error' });
       return false;
     }
   }
@@ -306,7 +348,7 @@ export class ScrapingService {
         ],
       });
 
-      const contentText = response.content[0].text;
+      const contentText = response.content[0].type === 'text' ? response.content[0].text : '';
 
       // Extract JSON from response
       const jsonMatch = contentText.match(/\{[\s\S]*\}/);
@@ -316,12 +358,15 @@ export class ScrapingService {
 
       const festivalData = JSON.parse(jsonMatch[0]);
 
+      // Normalize and validate data structure
+      const normalizedData = this.normalizeFestivalData(festivalData, sourceUrl);
+
       // Calculate confidence score
-      const confidence = this.calculateConfidenceScore(festivalData);
+      const confidence = this.calculateConfidenceScore(normalizedData);
 
       return {
         success: true,
-        data: festivalData,
+        data: normalizedData,
         confidence,
       };
 
@@ -344,34 +389,46 @@ export class ScrapingService {
   "description": "Brief description",
   "startDate": "YYYY-MM-DD",
   "endDate": "YYYY-MM-DD",
+  "timezone": "Timezone (e.g., UTC, Europe/Rome)",
+  "registrationDeadline": "YYYY-MM-DD (optional)",
   "venue": {
     "name": "Venue name",
-    "address": "Full address",
+    "address": "Full address including street",
     "city": "City",
-    "country": "Country"
+    "state": "State/Province (optional)",
+    "country": "Country",
+    "postalCode": "Postal code (optional)",
+    "latitude": 00.000000 (optional),
+    "longitude": 00.000000 (optional)"
   },
   "website": "Official website URL",
+  "facebook": "Facebook URL (optional)",
+  "instagram": "Instagram URL (optional)",
+  "email": "Contact email (optional)",
+  "phone": "Contact phone (optional)",
   "registrationUrl": "Registration/ticket URL",
   "teachers": [
     {
       "name": "Teacher name",
-      "specialties": ["swing", "blues", "balboa", etc]
+      "specialties": ["swing", "blues", "balboa", "collegiate shag", etc]
     }
   ],
   "musicians": [
     {
       "name": "Band/musician name",
-      "genre": ["swing", "blues", "jazz", etc]
+      "genre": ["swing", "blues", "jazz", "etc"]
     }
   ],
   "prices": [
     {
-      "type": "early_bird|regular|late|student",
+      "type": "early_bird|regular|late|student|local|vip|donation",
       "amount": 150.00,
-      "currency": "USD|EUR|GBP"
+      "currency": "USD|EUR|GBP|CHF",
+      "deadline": "YYYY-MM-DD (optional)",
+      "description": "Additional price info (optional)"
     }
   ],
-  "tags": ["swing", "blues", "festival", "workshop", "social"],
+  "tags": ["swing", "blues", "festival", "workshop", "social", "dance"],
   "confidence": 0.95
 }
 
@@ -382,10 +439,104 @@ Rules:
 4. Set confidence score based on data completeness and clarity
 5. All text must be in English
 6. Present information in clear, professional manner
+7. Date format must be YYYY-MM-DD
+8. For prices, use only the specified currency codes
+9. For venue, provide the most complete address information available
 
 Website content from ${sourceUrl}:
 
 ${content}`;
+  }
+
+  private normalizeFestivalData(rawData: any, sourceUrl: string): FestivalData {
+    // Convert date strings to Date objects
+    const normalizeDate = (dateStr: string | undefined): Date | undefined => {
+      if (!dateStr) return undefined;
+      try {
+        const date = new Date(dateStr);
+        return isNaN(date.getTime()) ? undefined : date;
+      } catch {
+        return undefined;
+      }
+    };
+
+    const normalizePriceDate = (dateStr: string | undefined): Date | undefined => {
+      return normalizeDate(dateStr);
+    };
+
+    // Sanitize string inputs
+    const sanitizeString = (input: any): string | undefined => {
+      if (typeof input !== 'string') return undefined;
+      return input.trim().slice(0, 1000); // Limit length
+    };
+
+    const sanitizeArray = (input: any): string[] => {
+      if (!Array.isArray(input)) return [];
+      return input
+        .filter(item => typeof item === 'string')
+        .map(item => item.trim())
+        .filter(item => item.length > 0)
+        .slice(0, 50); // Limit array size
+    };
+
+    // Validate coordinates
+    const validateCoordinate = (coord: any): number | undefined => {
+      if (typeof coord !== 'number') return undefined;
+      if (coord < -90 || coord > 90) return undefined; // Latitude bounds
+      return coord;
+    };
+
+    // Validate price amount
+    const validatePrice = (amount: any): number => {
+      const num = parseFloat(amount);
+      return isNaN(num) || num < 0 ? 0 : num;
+    };
+
+    // Map raw data to FestivalData interface with validation
+    return {
+      name: sanitizeString(rawData.name) || 'Unknown Festival',
+      description: sanitizeString(rawData.description),
+      website: sanitizeString(rawData.website),
+      facebook: sanitizeString(rawData.facebook),
+      instagram: sanitizeString(rawData.instagram),
+      email: sanitizeString(rawData.email),
+      phone: sanitizeString(rawData.phone),
+      startDate: normalizeDate(rawData.startDate) || new Date(),
+      endDate: normalizeDate(rawData.endDate) || new Date(),
+      timezone: sanitizeString(rawData.timezone),
+      registrationDeadline: normalizePriceDate(rawData.registrationDeadline),
+      registrationUrl: sanitizeString(rawData.registrationUrl),
+      sourceUrl: sourceUrl,
+      venue: rawData.venue ? {
+        name: sanitizeString(rawData.venue.name) || 'Unknown Venue',
+        address: sanitizeString(rawData.venue.address),
+        city: sanitizeString(rawData.venue.city),
+        state: sanitizeString(rawData.venue.state),
+        country: sanitizeString(rawData.venue.country),
+        postalCode: sanitizeString(rawData.venue.postalCode),
+        latitude: validateCoordinate(rawData.venue.latitude),
+        longitude: validateCoordinate(rawData.venue.longitude),
+      } : undefined,
+      teachers: Array.isArray(rawData.teachers) ? rawData.teachers.slice(0, 20).map((teacher: any) => ({
+        name: sanitizeString(teacher.name) || 'Unknown Teacher',
+        specialties: Array.isArray(teacher.specialties) ?
+          teacher.specialties.slice(0, 10).map((s: any) => sanitizeString(s)).filter(Boolean) : [],
+      })) : [],
+      musicians: Array.isArray(rawData.musicians) ? rawData.musicians.slice(0, 20).map((musician: any) => ({
+        name: sanitizeString(musician.name) || 'Unknown Musician',
+        genre: Array.isArray(musician.genre) ?
+          musician.genre.slice(0, 10).map((g: any) => sanitizeString(g)).filter(Boolean) : [],
+      })) : [],
+      prices: Array.isArray(rawData.prices) ? rawData.prices.slice(0, 10).map((price: any) => ({
+        type: ['early_bird', 'regular', 'late', 'student', 'local', 'vip', 'donation'].includes(price.type) ?
+          price.type : 'regular',
+        amount: validatePrice(price.amount),
+        currency: ['USD', 'EUR', 'GBP', 'CHF'].includes(price.currency) ? price.currency : 'USD',
+        deadline: normalizePriceDate(price.deadline),
+        description: sanitizeString(price.description),
+      })) : [],
+      tags: sanitizeArray(rawData.tags),
+    };
   }
 
   private calculateConfidenceScore(data: FestivalData): number {
@@ -422,7 +573,7 @@ ${content}`;
 
     optionalFields.forEach(({ field, weight }) => {
       maxScore += weight;
-      if (field && field > 0) {
+      if (typeof field === 'number' && field > 0) {
         score += weight;
       }
     });

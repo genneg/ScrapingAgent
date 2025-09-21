@@ -1,16 +1,141 @@
 import { z } from 'zod';
 import { logger } from '@/lib/logger';
 import { FestivalData } from '@/types';
+import { ValidationError as AppValidationError, BaseError, ErrorUtils } from '@/lib/errors';
+
+// Define validation utilities directly (consolidated from lib/validation)
+// Price type enum
+const priceTypeEnum = z.enum(['early_bird', 'regular', 'late', 'student', 'local', 'vip', 'donation']);
+
+// Currency enum
+const currencyEnum = z.enum(['USD', 'EUR', 'GBP', 'CHF']);
+
+// Define validation schemas with extendable type
+const validationSchemasBase = {
+  // URL validation with security checks
+  url: z.string()
+    .min(1, 'URL is required')
+    .max(2048, 'URL is too long')
+    .url('Invalid URL format')
+    .refine(
+      (url) => {
+        try {
+          const urlObj = new URL(url);
+          const hostname = urlObj.hostname.toLowerCase();
+
+          // Block localhost and private networks
+          return !(
+            hostname === 'localhost' ||
+            hostname === '127.0.0.1' ||
+            hostname.startsWith('192.168.') ||
+            hostname.startsWith('10.') ||
+            hostname.startsWith('172.') ||
+            hostname.endsWith('.local')
+          );
+        } catch {
+          return false;
+        }
+      },
+      'Access to internal or private networks is not allowed'
+    )
+    .refine(
+      (url) => {
+        try {
+          const urlObj = new URL(url);
+          return ['http:', 'https:'].includes(urlObj.protocol);
+        } catch {
+          return false;
+        }
+      },
+      'Only HTTP and HTTPS protocols are allowed'
+    ),
+
+  // Email validation
+  email: z.string()
+    .email('Invalid email format')
+    .max(254, 'Email is too long')
+    .transform((email) => email.toLowerCase().trim()),
+
+  // Festival name validation
+  festivalName: z.string()
+    .min(1, 'Festival name is required')
+    .max(200, 'Festival name is too long')
+    .transform((name) => name.trim()),
+
+  // Date validation
+  date: z.string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be in YYYY-MM-DD format')
+    .refine(
+      (dateStr) => {
+        try {
+          const date = new Date(dateStr);
+          return !isNaN(date.getTime());
+        } catch {
+          return false;
+        }
+      },
+      'Invalid date'
+    ),
+
+  // File upload validation
+  fileUpload: z.object({
+    filename: z.string()
+      .min(1, 'Filename is required')
+      .max(255, 'Filename is too long')
+      .refine(
+        (name) => !/[<>:"/\\|?*]/.test(name),
+        'Filename contains invalid characters'
+      ),
+    mimetype: z.string()
+      .refine(
+        (type) => [
+          'application/json',
+          'text/plain',
+          'application/xml'
+        ].includes(type),
+        'Unsupported file type'
+      ),
+    size: z.number()
+      .min(1, 'File cannot be empty')
+      .max(5 * 1024 * 1024, 'File size cannot exceed 5MB'), // 5MB limit
+  }),
+};
+
+// Export the schemas with additional properties
+export const validationSchemas = {
+  ...validationSchemasBase,
+  // Login credentials validation (defined after to avoid circular reference)
+  // Scraping request validation (defined after to avoid circular reference)
+} as typeof validationSchemasBase & {
+  loginCredentials: z.ZodObject<any, any, any, any, any>;
+  scrapingRequest: z.ZodObject<any, any, any, any, any>;
+};
+
+// Add schemas that reference others to avoid circular references
+validationSchemas.loginCredentials = z.object({
+  email: validationSchemas.email,
+  password: z.string()
+    .min(8, 'Password must be at least 8 characters long')
+    .max(128, 'Password is too long'),
+});
+
+validationSchemas.scrapingRequest = z.object({
+  url: validationSchemas.url,
+  confidenceThreshold: z.number()
+    .min(0, 'Confidence threshold must be between 0 and 1')
+    .max(1, 'Confidence threshold must be between 0 and 1')
+    .optional(),
+});
 
 export interface ValidationResult {
   isValid: boolean;
   confidence: number;
-  errors: ValidationError[];
+  errors: ValidationErrorDetail[];
   warnings: ValidationWarning[];
   normalizedData?: FestivalData;
 }
 
-export interface ValidationError {
+export interface ValidationErrorDetail {
   field: string;
   message: string;
   severity: 'critical' | 'error' | 'warning';
@@ -27,14 +152,8 @@ export interface ValidationWarning {
 const festivalSchema = z.object({
   name: z.string().min(3, 'Festival name must be at least 3 characters'),
   description: z.string().optional(),
-  startDate: z.string().refine(
-    (date) => !isNaN(Date.parse(date)),
-    { message: 'Invalid start date format' }
-  ),
-  endDate: z.string().refine(
-    (date) => !isNaN(Date.parse(date)),
-    { message: 'Invalid end date format' }
-  ),
+  startDate: z.date(),
+  endDate: z.date(),
   venue: z.object({
     name: z.string().min(1, 'Venue name is required'),
     address: z.string().optional(),
@@ -74,7 +193,7 @@ const festivalSchema = z.object({
 
 export class ValidationService {
   async validateFestivalData(data: FestivalData): Promise<ValidationResult> {
-    const errors: ValidationError[] = [];
+    const errors: ValidationErrorDetail[] = [];
     const warnings: ValidationWarning[] = [];
     let normalizedData = { ...data };
 
@@ -85,13 +204,20 @@ export class ValidationService {
         endDate: data.endDate
       });
 
+      // Preprocess data: convert string dates to Date objects
+      const processedData = {
+        ...data,
+        startDate: data.startDate instanceof Date ? data.startDate : new Date(data.startDate),
+        endDate: data.endDate instanceof Date ? data.endDate : new Date(data.endDate),
+      };
+
       // Zod schema validation
-      const schemaResult = festivalSchema.safeParse(data);
+      const schemaResult = festivalSchema.safeParse(processedData);
       if (!schemaResult.success) {
-        schemaResult.error.errors.forEach((error) => {
+        schemaResult.error.issues.forEach((issue) => {
           errors.push({
-            field: error.path.join('.'),
-            message: error.message,
+            field: issue.path.join('.'),
+            message: issue.message,
             severity: 'error',
             code: 'SCHEMA_VALIDATION',
           });
@@ -132,15 +258,24 @@ export class ValidationService {
       };
 
     } catch (error) {
-      logger.error('Validation failed unexpectedly', { error });
+      logger.error('Validation failed unexpectedly', {
+        error: ErrorUtils.formatForLogging(error instanceof Error ? error : new Error(String(error)))
+      });
+
+      const systemError = error instanceof BaseError ? error : new BaseError({
+        code: 'VALIDATION_SYSTEM_ERROR',
+        message: error instanceof Error ? error.message : 'Validation system error',
+        cause: error instanceof Error ? error : undefined,
+      });
+
       return {
         isValid: false,
         confidence: 0,
         errors: [{
           field: 'system',
-          message: 'Validation system error',
+          message: systemError.message,
           severity: 'critical',
-          code: 'VALIDATION_SYSTEM_ERROR'
+          code: systemError.code
         }],
         warnings: [],
         normalizedData: data,
@@ -148,8 +283,8 @@ export class ValidationService {
     }
   }
 
-  private validateBusinessRules(data: FestivalData): ValidationError[] {
-    const errors: ValidationError[] = [];
+  private validateBusinessRules(data: FestivalData): ValidationErrorDetail[] {
+    const errors: ValidationErrorDetail[] = [];
 
     // Date validations
     if (data.startDate && data.endDate) {
@@ -309,7 +444,7 @@ export class ValidationService {
       normalized.teachers = normalized.teachers.map(teacher => ({
         ...teacher,
         name: teacher.name.trim().replace(/\s+/g, ' '),
-        specialties: teacher.specialties.map(s => s.trim().toLowerCase()),
+        specialties: teacher.specialties?.map(s => s.trim().toLowerCase()) || [],
       }));
     }
 
@@ -318,7 +453,7 @@ export class ValidationService {
       normalized.musicians = normalized.musicians.map(musician => ({
         ...musician,
         name: musician.name.trim().replace(/\s+/g, ' '),
-        genre: musician.genre.map(g => g.trim().toLowerCase()),
+        genre: musician.genre?.map(g => g.trim().toLowerCase()) || [],
       }));
     }
 
@@ -331,7 +466,7 @@ export class ValidationService {
   }
 
   private calculateValidationConfidence(
-    errors: ValidationError[],
+    errors: ValidationErrorDetail[],
     warnings: ValidationWarning[],
     data: FestivalData
   ): number {
@@ -398,3 +533,150 @@ export class ValidationService {
 }
 
 export const validationService = new ValidationService();
+
+// Input sanitization utilities (consolidated from lib/validation)
+export const sanitizeInput = {
+  // Sanitize string input
+  string: (input: unknown, maxLength = 1000): string => {
+    if (typeof input !== 'string') return '';
+    return input.trim().slice(0, maxLength);
+  },
+
+  // Sanitize array of strings
+  stringArray: (input: unknown, maxLength = 50): string[] => {
+    if (!Array.isArray(input)) return [];
+    return input
+      .filter(item => typeof item === 'string')
+      .map(item => item.trim())
+      .filter(item => item.length > 0)
+      .slice(0, maxLength);
+  },
+
+  // Sanitize number
+  number: (input: unknown, defaultValue = 0): number => {
+    const num = Number(input);
+    return isNaN(num) ? defaultValue : num;
+  },
+
+  // Sanitize email
+  email: (input: unknown): string => {
+    if (typeof input !== 'string') return '';
+    return input.toLowerCase().trim().slice(0, 254);
+  },
+
+  // Sanitize URL
+  url: (input: unknown): string => {
+    if (typeof input !== 'string') return '';
+    return input.trim().slice(0, 2048);
+  },
+
+  // Remove HTML/JS from string
+  stripHtml: (input: unknown): string => {
+    if (typeof input !== 'string') return '';
+    return input
+      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+      .replace(/<[^>]*>/g, '')
+      .trim();
+  },
+};
+
+// Security validation utilities
+export const securityValidation = {
+  // Check for SQL injection patterns
+  containsSqlInjection: (input: string): boolean => {
+    const sqlPatterns = [
+      /(\s|^)(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE)(\s|$)/i,
+      /(\s|^)(UNION|JOIN|WHERE|HAVING|GROUP BY)(\s|$)/i,
+      /[';]/, // Potential SQL injection characters
+      /(\s|^)(OR|AND)\s+\d+\s*=\s*\d+/i, // OR 1=1 patterns
+    ];
+    return sqlPatterns.some(pattern => pattern.test(input));
+  },
+
+  // Check for XSS patterns
+  containsXss: (input: string): boolean => {
+    const xssPatterns = [
+      /<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi,
+      /javascript:/i,
+      /on\w+\s*=/i, // event handlers
+      /<iframe\b/i,
+      /<object\b/i,
+      /<embed\b/i,
+      /expression\s*\(/i, // CSS expressions
+    ];
+    return xssPatterns.some(pattern => pattern.test(input));
+  },
+
+  // Check for path traversal patterns
+  containsPathTraversal: (input: string): boolean => {
+    const traversalPatterns = [
+      /\.\.\//, // ../
+      /\.\.\\/, // ..\
+      /~\//, // ~/
+      /%2e%2e%2f/i, // URL encoded ../
+      /%2e%2e%5c/i, // URL encoded ..\
+    ];
+    return traversalPatterns.some(pattern => pattern.test(input));
+  },
+
+  // Comprehensive security check
+  isInputSafe: (input: string): { safe: boolean; reason?: string } => {
+    if (securityValidation.containsSqlInjection(input)) {
+      return { safe: false, reason: 'Potential SQL injection detected' };
+    }
+    if (securityValidation.containsXss(input)) {
+      return { safe: false, reason: 'Potential XSS detected' };
+    }
+    if (securityValidation.containsPathTraversal(input)) {
+      return { safe: false, reason: 'Potential path traversal detected' };
+    }
+    return { safe: true };
+  },
+};
+
+// Validation error helper
+export class ValidationErrorHelper extends Error {
+  constructor(
+    message: string,
+    public field?: string,
+    public details?: unknown
+  ) {
+    super(message);
+    this.name = 'ValidationError';
+  }
+}
+
+// Generic validation function
+export async function validateInput<T>(
+  data: unknown,
+  schema: z.ZodSchema<T>
+): Promise<{ success: true; data: T } | { success: false; error: ValidationErrorHelper }> {
+  try {
+    const result = await schema.parseAsync(data);
+    return { success: true, data: result };
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      const firstError = error.issues[0];
+      return {
+        success: false,
+        error: new ValidationErrorHelper(
+          firstError.message,
+          firstError.path.join('.'),
+          error.issues
+        ),
+      };
+    }
+    return {
+      success: false,
+      error: new ValidationErrorHelper('Validation failed'),
+    };
+  }
+}
+
+// Rate limiting configuration
+export const rateLimitConfig = {
+  scraping: { requests: 10, windowMs: 60 * 1000 }, // 10 requests per minute
+  upload: { requests: 5, windowMs: 60 * 1000 }, // 5 uploads per minute
+  login: { requests: 3, windowMs: 60 * 1000 }, // 3 login attempts per minute
+  api: { requests: 100, windowMs: 60 * 1000 }, // 100 API requests per minute
+};

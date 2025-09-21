@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createLogger } from './logger';
+import jwt from 'jsonwebtoken';
+import { rateLimiterService } from '@/services/rate-limiter';
+import { configService } from '@/lib/config';
+import { AuthenticationError, AuthorizationError, ErrorUtils, BaseError } from '@/lib/errors';
 
 const logger = createLogger('auth');
 
@@ -28,17 +32,8 @@ export async function authenticateRequest(
 
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       logger.warn('Missing or invalid authorization header');
-      return NextResponse.json(
-        {
-          success: false,
-          error: {
-            code: 'UNAUTHORIZED',
-            message: 'Missing or invalid authorization header',
-          },
-          timestamp: new Date().toISOString(),
-        },
-        { status: 401 }
-      );
+      const authError = new AuthenticationError('Missing or invalid authorization header');
+      return ErrorUtils.createErrorResponse(authError, 401);
     }
 
     const token = authHeader.substring(7); // Remove 'Bearer ' prefix
@@ -49,17 +44,8 @@ export async function authenticateRequest(
 
     if (!user) {
       logger.warn('Invalid token provided');
-      return NextResponse.json(
-        {
-          success: false,
-          error: {
-            code: 'INVALID_TOKEN',
-            message: 'Invalid or expired token',
-          },
-          timestamp: new Date().toISOString(),
-        },
-        { status: 401 }
-      );
+      const tokenError = new AuthenticationError('Invalid or expired token');
+      return ErrorUtils.createErrorResponse(tokenError, 401);
     }
 
     // Check required permissions
@@ -74,17 +60,14 @@ export async function authenticateRequest(
           requiredPermissions,
           userPermissions: user.permissions
         });
-        return NextResponse.json(
-          {
-            success: false,
-            error: {
-              code: 'INSUFFICIENT_PERMISSIONS',
-              message: 'Insufficient permissions to access this resource',
-            },
-            timestamp: new Date().toISOString(),
-          },
-          { status: 403 }
-        );
+        const authzError = new AuthorizationError('Insufficient permissions to access this resource', {
+          context: {
+            userId: user.id,
+            requiredPermissions,
+            userPermissions: user.permissions
+          }
+        });
+        return ErrorUtils.createErrorResponse(authzError, 403);
       }
     }
 
@@ -98,49 +81,54 @@ export async function authenticateRequest(
       sessionId,
     };
   } catch (error) {
-    logger.error('Authentication error', { error });
-    return NextResponse.json(
+    logger.error('Authentication error', {
+      error: ErrorUtils.formatForLogging(error instanceof Error ? error : new Error(String(error)))
+    });
+
+    const authError = error instanceof BaseError ? error : new AuthenticationError(
+      'Authentication failed',
       {
-        success: false,
-        error: {
-          code: 'AUTH_ERROR',
-          message: 'Authentication failed',
-          details: error instanceof Error ? error.message : 'Unknown error',
-        },
-        timestamp: new Date().toISOString(),
-      },
-      { status: 500 }
+        cause: error instanceof Error ? error : undefined,
+        details: error instanceof Error ? error.message : 'Unknown error'
+      }
     );
+
+    return ErrorUtils.createErrorResponse(authError, 500);
   }
 }
 
 /**
- * Validate authentication token
- * For demo purposes, accept a simple token
- * In production, this should validate JWT tokens
+ * Validate authentication token using JWT
  */
 async function validateToken(token: string): Promise<AuthUser | null> {
-  // For development, accept a simple token
-  // In production, validate JWT token here
-  if (token === 'demo-admin-token') {
-    return {
-      id: 'demo-admin-id',
-      email: 'admin@swingradar.com',
-      role: 'admin',
-      permissions: ['read', 'write', 'delete', 'admin'],
-    };
-  }
+  try {
+    // Verify the JWT token
+    const jwtSecret = configService.getConfig().auth.jwtSecret;
+    const decoded = jwt.verify(token, jwtSecret) as any;
 
-  if (token === 'demo-user-token') {
-    return {
-      id: 'demo-user-id',
-      email: 'user@swingradar.com',
-      role: 'user',
-      permissions: ['read'],
-    };
-  }
+    // Validate the token structure
+    if (!decoded.id || !decoded.email || !decoded.role) {
+      logger.warn('Invalid token structure', { decoded });
+      return null;
+    }
 
-  return null;
+    // Return the user object
+    return {
+      id: decoded.id,
+      email: decoded.email,
+      role: decoded.role,
+      permissions: decoded.permissions || [],
+    };
+  } catch (error) {
+    if (error instanceof jwt.JsonWebTokenError) {
+      logger.warn('Invalid JWT token', { error: error.message });
+    } else if (error instanceof jwt.TokenExpiredError) {
+      logger.warn('Expired JWT token');
+    } else {
+      logger.error('Token validation error', { error });
+    }
+    return null;
+  }
 }
 
 /**
@@ -182,58 +170,140 @@ export function hasPermission(user: AuthUser, permission: string): boolean {
 }
 
 /**
- * Rate limiting middleware
+ * Rate limiting middleware - delegates to database-backed rate limiter
  */
-export function createRateLimiter(requests: number, windowMs: number) {
-  const requestsMap = new Map<string, { count: number; resetTime: number }>();
+export function createRateLimiter(requests: number, windowMs: number, endpoint: string = 'api') {
+  return rateLimiterService.createMiddleware({
+    requests,
+    windowMs,
+    endpoint,
+  });
+}
 
-  return async (request: NextRequest): Promise<NextResponse | null> => {
-    const clientId = getClientId(request);
-    const now = Date.now();
-    const windowStart = now - windowMs;
 
-    // Clean expired entries
-    for (const [key, data] of requestsMap.entries()) {
-      if (data.resetTime < now) {
-        requestsMap.delete(key);
-      }
-    }
+/**
+ * Generate JWT token for authenticated user
+ */
+export function generateJWT(user: AuthUser): string {
+  const jwtSecret = configService.getConfig().auth.jwtSecret;
 
-    let data = requestsMap.get(clientId);
-
-    if (!data || data.resetTime < windowStart) {
-      data = { count: 0, resetTime: now + windowMs };
-      requestsMap.set(clientId, data);
-    }
-
-    if (data.count >= requests) {
-      logger.warn('Rate limit exceeded', { clientId, count: data.count });
-      return NextResponse.json(
-        {
-          success: false,
-          error: {
-            code: 'RATE_LIMIT_EXCEEDED',
-            message: 'Too many requests, please try again later',
-          },
-          timestamp: new Date().toISOString(),
-        },
-        { status: 429 }
-      );
-    }
-
-    data.count++;
-    return null; // Allow request to proceed
+  const payload = {
+    id: user.id,
+    email: user.email,
+    role: user.role,
+    permissions: user.permissions,
+    iat: Math.floor(Date.now() / 1000),
+    exp: Math.floor(Date.now() / 1000) + (24 * 60 * 60), // 24 hours expiration
   };
+
+  return jwt.sign(payload, jwtSecret);
 }
 
 /**
- * Get client ID for rate limiting
+ * Login credentials interface
  */
-function getClientId(request: NextRequest): string {
-  // Use IP address or authentication token for client identification
-  const forwarded = request.headers.get('x-forwarded-for');
-  const ip = forwarded ? forwarded.split(',')[0] : 'unknown';
-  const token = request.headers.get('authorization')?.replace('Bearer ', '') || 'anonymous';
+export interface LoginCredentials {
+  email: string;
+  password: string;
+}
 
-  return `${ip}:${token}`;
+/**
+ * Authenticate user credentials and return JWT token
+ */
+export async function loginUser(credentials: LoginCredentials): Promise<{ success: boolean; token?: string; user?: AuthUser; error?: string }> {
+  try {
+    const JWT_SECRET = process.env.JWT_SECRET;
+    if (!JWT_SECRET) {
+      throw new Error('JWT_SECRET environment variable is not set');
+    }
+
+    // For now, implement basic credential validation
+    // In production, this should validate against a database
+    const user = await validateCredentials(credentials.email, credentials.password);
+
+    if (!user) {
+      return {
+        success: false,
+        error: 'Invalid email or password',
+      };
+    }
+
+    const token = generateJWT(user);
+
+    logger.info('User logged in successfully', { userId: user.id, email: user.email });
+
+    return {
+      success: true,
+      token,
+      user,
+    };
+  } catch (error) {
+    logger.error('Login error', { error });
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Login failed',
+    };
+  }
+}
+
+/**
+ * Validate user credentials against database
+ * This is a placeholder - in production, validate against your user database
+ */
+async function validateCredentials(email: string, password: string): Promise<AuthUser | null> {
+  // For development/demo purposes only
+  // In production, validate against hashed passwords in database
+
+  // Check environment variables for demo credentials
+  const DEMO_EMAIL = process.env.DEMO_USER_EMAIL;
+  const DEMO_PASSWORD = process.env.DEMO_USER_PASSWORD;
+  const ADMIN_EMAIL = process.env.ADMIN_USER_EMAIL;
+  const ADMIN_PASSWORD = process.env.ADMIN_USER_PASSWORD;
+
+  if (email === ADMIN_EMAIL && password === ADMIN_PASSWORD) {
+    return {
+      id: 'admin-id',
+      email: ADMIN_EMAIL,
+      role: 'admin',
+      permissions: ['read', 'write', 'delete', 'admin'],
+    };
+  }
+
+  if (email === DEMO_EMAIL && password === DEMO_PASSWORD) {
+    return {
+      id: 'demo-user-id',
+      email: DEMO_EMAIL,
+      role: 'user',
+      permissions: ['read'],
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Refresh JWT token
+ */
+export async function refreshToken(token: string): Promise<{ success: boolean; token?: string; error?: string }> {
+  try {
+    const user = await validateToken(token);
+    if (!user) {
+      return {
+        success: false,
+        error: 'Invalid or expired token',
+      };
+    }
+
+    const newToken = generateJWT(user);
+    return {
+      success: true,
+      token: newToken,
+    };
+  } catch (error) {
+    logger.error('Token refresh error', { error });
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Token refresh failed',
+    };
+  }
 }

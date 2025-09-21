@@ -11,44 +11,44 @@ export interface FestivalData {
   startDate: Date;
   endDate: Date;
   timezone?: string;
+  registrationDeadline?: Date;
+  registrationUrl?: string;
+  sourceUrl?: string;
 
-  location?: {
-    venue?: string;
-    address?: string;
-    city?: string;
-    country?: string;
-    latitude?: number;
-    longitude?: number;
-  };
-
-  artists?: ArtistData[];
-  workshops?: WorkshopData[];
-  socialEvents?: SocialEventData[];
+  venue?: VenueData;
+  teachers?: TeacherData[];
+  musicians?: MusicianData[];
+  prices?: PriceData[];
+  tags?: string[];
 }
 
-export interface ArtistData {
+export interface VenueData {
   name: string;
-  bio?: string;
-  website?: string;
-  facebook?: string;
-  instagram?: string;
+  address?: string;
+  city?: string;
+  state?: string;
+  country?: string;
+  postalCode?: string;
+  latitude?: number;
+  longitude?: number;
 }
 
-export interface WorkshopData {
-  title: string;
-  description?: string;
-  level?: string;
-  startTime: Date;
-  endTime: Date;
-  artist?: string;
+export interface TeacherData {
+  name: string;
+  specialties?: string[];
 }
 
-export interface SocialEventData {
-  title: string;
+export interface MusicianData {
+  name: string;
+  genre?: string[];
+}
+
+export interface PriceData {
+  type: string;
+  amount: number;
+  currency: string;
+  deadline?: Date;
   description?: string;
-  startTime: Date;
-  endTime: Date;
-  eventType?: string;
 }
 
 // API types
