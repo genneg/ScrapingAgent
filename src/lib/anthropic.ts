@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { logger } from '@/lib/logger';
 import { Result } from '@/types';
+import { withCircuitBreaker } from '@/lib/circuit-breaker';
 
 // Helper functions for Result type
 function Ok<T>(data: T): Result<T, Error> {
@@ -57,17 +58,19 @@ export async function sendAnthropicMessage(
   try {
     const { prompt, systemPrompt, config = {} } = options;
 
-    const message = await anthropic.messages.create({
-      model: config.model || ANTHROPIC_MODEL,
-      max_tokens: config.maxTokens || MAX_TOKENS,
-      temperature: config.temperature || TEMPERATURE,
-      system: systemPrompt,
-      messages: [
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
+    const message = await withCircuitBreaker('claudeApi', async () => {
+      return await anthropic.messages.create({
+        model: config.model || ANTHROPIC_MODEL,
+        max_tokens: config.maxTokens || MAX_TOKENS,
+        temperature: config.temperature || TEMPERATURE,
+        system: systemPrompt,
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+      });
     });
 
     const response: AnthropicResponse = {

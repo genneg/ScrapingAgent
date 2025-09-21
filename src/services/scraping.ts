@@ -1,7 +1,7 @@
 import { anthropic } from '@/lib/anthropic';
 import { logger } from '@/lib/logger';
 import { FestivalData } from '@/types';
-import { ValidationError, ExternalServiceError, ConfigurationError, ErrorUtils, BaseError } from '@/lib/errors';
+import { ValidationError, ExternalServiceError } from '@/lib/errors';
 
 // Type definitions for raw festival data from AI
 interface RawFestivalData {
@@ -55,11 +55,6 @@ interface RawPriceData {
   description?: string;
 }
 
-interface ValidationIssue {
-  field: string;
-  message: string;
-  severity: 'error' | 'warning';
-}
 
 export interface ScrapingResult {
   success: boolean;

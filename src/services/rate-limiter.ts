@@ -14,13 +14,54 @@ export interface RateLimitResult {
   remaining: number;
   resetTime: Date;
   limit: number;
+  retryAfter?: number;
 }
 
 export class RateLimiterService {
   /**
-   * Check if request is allowed based on rate limits
+   * Check if request is allowed based on rate limits (for API endpoints)
    */
   async checkRateLimit(
+    request: NextRequest,
+    endpoint: string
+  ): Promise<RateLimitResult> {
+    const clientId = this.getClientId(request);
+    const config = this.getEndpointConfig(endpoint);
+
+    return this.checkRateLimitInternal(clientId, config);
+  }
+
+  /**
+   * Get client ID from request (IP-based with fallback)
+   */
+  private getClientId(request: NextRequest): string {
+    // Try to get real IP from various headers
+    const forwardedFor = request.headers.get('x-forwarded-for');
+    const realIp = request.headers.get('x-real-ip');
+    const cfConnectingIp = request.headers.get('cf-connecting-ip');
+
+    const ip = forwardedFor?.split(',')[0] || realIp || cfConnectingIp || 'unknown';
+    return `ip_${ip}`;
+  }
+
+  /**
+   * Get rate limit configuration for endpoint
+   */
+  private getEndpointConfig(endpoint: string): RateLimitConfig {
+    const configs = {
+      'scraping': { requests: 10, windowMs: 60 * 1000, endpoint },
+      'upload': { requests: 5, windowMs: 60 * 1000, endpoint },
+      'api': { requests: 100, windowMs: 60 * 1000, endpoint },
+      'default': { requests: 30, windowMs: 60 * 1000, endpoint }
+    };
+
+    return configs[endpoint as keyof typeof configs] || configs.default;
+  }
+
+  /**
+   * Internal rate limit check with client ID and config
+   */
+  async checkRateLimitInternal(
     clientId: string,
     config: RateLimitConfig
   ): Promise<RateLimitResult> {
@@ -108,6 +149,7 @@ export class RateLimiterService {
           remaining: 0,
           resetTime: rateLimit.windowEnd,
           limit: config.requests,
+          retryAfter: Math.ceil((rateLimit.windowEnd.getTime() - now.getTime()) / 1000),
         };
       }
 

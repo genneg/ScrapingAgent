@@ -3,6 +3,7 @@ import { parse } from 'url';
 import next from 'next';
 import { websocketService } from '@/lib/websocket';
 import { createLogger } from '@/lib/logger';
+import 'dotenv/config';
 
 const logger = createLogger('server');
 const dev = process.env.NODE_ENV !== 'production';

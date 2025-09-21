@@ -1,4 +1,5 @@
 // Security utilities for data sanitization and logging
+import { logger } from '@/lib/logger';
 
 // API Key patterns to detect and sanitize
 const API_KEY_PATTERNS = [
@@ -17,6 +18,95 @@ const SENSITIVE_PATTERNS = [
 ];
 
 export class SecurityUtils {
+  /**
+   * Generate a unique request ID for tracking
+   */
+  static generateRequestId(): string {
+    return `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  /**
+   * Validate and sanitize URL for scraping (SSRF protection)
+   */
+  static sanitizeUrl(url: string): string | null {
+    try {
+      const urlObj = new URL(url);
+
+      // Check protocol - only allow http and https
+      if (!['http:', 'https:'].includes(urlObj.protocol)) {
+        logger.warn('Invalid protocol in URL', { url, protocol: urlObj.protocol });
+        return null;
+      }
+
+      // Prevent localhost and private network access
+      const hostname = urlObj.hostname.toLowerCase();
+
+      // Check for localhost variants
+      if (hostname === 'localhost' ||
+          hostname === '127.0.0.1' ||
+          hostname === '::1' ||
+          hostname.startsWith('192.168.') ||
+          hostname.startsWith('10.') ||
+          hostname.startsWith('172.')) {
+        logger.warn('Private network access attempted', { hostname });
+        return null;
+      }
+
+      // Check for internal IP ranges in more detail
+      if (this.isPrivateIp(hostname)) {
+        logger.warn('Internal IP access attempted', { hostname });
+        return null;
+      }
+
+      // Prevent non-standard ports
+      const port = parseInt(urlObj.port) || (urlObj.protocol === 'https:' ? 443 : 80);
+      if (port < 1 || port > 65535) {
+        logger.warn('Invalid port in URL', { port });
+        return null;
+      }
+
+      // Check for potentially dangerous ports
+      const dangerousPorts = [22, 23, 25, 53, 80, 110, 143, 443, 993, 995, 1433, 1521, 3306, 3389, 5432, 5900, 6379];
+      if (dangerousPorts.includes(port)) {
+        logger.warn('Potentially dangerous port', { port });
+        // Allow common web ports (80, 443) but log others
+        if (![80, 443].includes(port)) {
+          return null;
+        }
+      }
+
+      // Validate URL structure
+      if (!urlObj.hostname || urlObj.hostname.length < 4) {
+        logger.warn('Invalid hostname', { hostname: urlObj.hostname });
+        return null;
+      }
+
+      // Return the normalized URL
+      return urlObj.href;
+
+    } catch (error) {
+      logger.warn('URL validation failed', { url, error: error instanceof Error ? error.message : 'Unknown error' });
+      return null;
+    }
+  }
+
+  /**
+   * Check if hostname resolves to a private IP
+   */
+  private static isPrivateIp(hostname: string): boolean {
+    // Check for IP address patterns
+    const ipPatterns = [
+      /^169\.254\.\d{1,3}\.\d{1,3}$/, // Link-local addresses
+      /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/, // Loopback
+      /^0\.\d{1,3}\.\d{1,3}\.\d{1,3}$/, // "This" network
+      /^192\.168\.\d{1,3}\.\d{1,3}$/, // Private class C
+      /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/, // Private class A
+      /^172\.(1[6-9]|2[0-9]|3[0-1])\.\d{1,3}\.\d{1,3}$/, // Private class B
+    ];
+
+    return ipPatterns.some(pattern => pattern.test(hostname));
+  }
+
   /**
    * Sanitizes sensitive data from strings for logging
    */

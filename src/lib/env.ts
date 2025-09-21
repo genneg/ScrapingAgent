@@ -10,8 +10,8 @@ const envSchema = z.object({
   GOOGLE_MAPS_API_KEY: z.string().min(1, 'GOOGLE_MAPS_API_KEY is required').optional(),
 
   // Supabase
-  NEXT_PUBLIC_SUPABASE_URL: z.string().url('Invalid Supabase URL format'),
-  SUPABASE_SERVICE_ROLE_KEY: z.string().min(1, 'SUPABASE_SERVICE_ROLE_KEY is required'),
+  NEXT_PUBLIC_SUPABASE_URL: z.string().url('Invalid Supabase URL format').optional(),
+  SUPABASE_SERVICE_ROLE_KEY: z.string().min(1, 'SUPABASE_SERVICE_ROLE_KEY is required').optional(),
 
   // Environment
   NODE_ENV: z
