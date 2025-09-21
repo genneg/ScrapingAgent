@@ -1,0 +1,397 @@
+/* Temporarily disabled Tailwind CSS due to compatibility issues */
+/* Basic CSS styles instead */
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+  --gray-50: #f9fafb;
+  --gray-100: #f3f4f6;
+  --gray-600: #4b5563;
+  --gray-700: #374151;
+  --gray-900: #111827;
+  --blue-100: #dbeafe;
+  --blue-600: #2563eb;
+  --green-100: #d1fae5;
+  --green-600: #059669;
+  --purple-100: #e9d5ff;
+  --purple-600: #9333ea;
+  --green-800: #166534;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+  margin: 0;
+  padding: 0;
+}
+
+/* Utility classes */
+.min-h-screen {
+  min-height: 100vh;
+}
+.bg-gradient-to-br {
+  background: linear-gradient(to bottom right, var(--gray-50), var(--gray-100));
+}
+.bg-white {
+  background-color: white;
+}
+.bg-gray-50 {
+  background-color: var(--gray-50);
+}
+.bg-green-100 {
+  background-color: var(--green-100);
+}
+.bg-blue-100 {
+  background-color: var(--blue-100);
+}
+.bg-purple-100 {
+  background-color: var(--purple-100);
+}
+.text-gray-900 {
+  color: var(--gray-900);
+}
+.text-gray-700 {
+  color: var(--gray-700);
+}
+.text-gray-600 {
+  color: var(--gray-600);
+}
+.text-white {
+  color: white;
+}
+.text-green-800 {
+  color: var(--green-800);
+}
+.text-blue-600 {
+  color: var(--blue-600);
+}
+.text-green-600 {
+  color: var(--green-600);
+}
+.text-purple-600 {
+  color: var(--purple-600);
+}
+.border-b {
+  border-bottom: 1px solid var(--gray-100);
+}
+.border-2 {
+  border-width: 2px;
+}
+.border-dashed {
+  border-style: dashed;
+}
+.border-gray-300 {
+  border-color: var(--gray-100);
+}
+.rounded-lg {
+  border-radius: 0.5rem;
+}
+.rounded-full {
+  border-radius: 9999px;
+}
+.shadow-md {
+  box-shadow:
+    0 4px 6px -1px rgba(0, 0, 0, 0.1),
+    0 2px 4px -1px rgba(0, 0, 0, 0.06);
+}
+.p-4 {
+  padding: 1rem;
+}
+.p-6 {
+  padding: 1.5rem;
+}
+.p-8 {
+  padding: 2rem;
+}
+.p-12 {
+  padding: 3rem;
+}
+.px-3 {
+  padding-left: 0.75rem;
+  padding-right: 0.75rem;
+}
+.px-4 {
+  padding-left: 1rem;
+  padding-right: 1rem;
+}
+.px-6 {
+  padding-left: 1.5rem;
+  padding-right: 1.5rem;
+}
+.py-1 {
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
+}
+.py-4 {
+  padding-top: 1rem;
+  padding-bottom: 1rem;
+}
+.py-6 {
+  padding-top: 1.5rem;
+  padding-bottom: 1.5rem;
+}
+.py-12 {
+  padding-top: 3rem;
+  padding-bottom: 3rem;
+}
+.mb-2 {
+  margin-bottom: 0.5rem;
+}
+.mb-4 {
+  margin-bottom: 1rem;
+}
+.mb-6 {
+  margin-bottom: 1.5rem;
+}
+.mb-8 {
+  margin-bottom: 2rem;
+}
+.mb-12 {
+  margin-bottom: 3rem;
+}
+.mr-3 {
+  margin-right: 0.75rem;
+}
+.w-3 {
+  width: 0.75rem;
+}
+.w-6 {
+  width: 1.5rem;
+}
+.w-12 {
+  width: 3rem;
+}
+.h-3 {
+  height: 0.75rem;
+}
+.h-6 {
+  height: 1.5rem;
+}
+.h-12 {
+  height: 3rem;
+}
+.text-sm {
+  font-size: 0.875rem;
+}
+.text-lg {
+  font-size: 1.125rem;
+}
+.text-xl {
+  font-size: 1.25rem;
+}
+.text-2xl {
+  font-size: 1.5rem;
+}
+.text-3xl {
+  font-size: 1.875rem;
+}
+.text-4xl {
+  font-size: 2.25rem;
+}
+.font-medium {
+  font-weight: 500;
+}
+.font-semibold {
+  font-weight: 600;
+}
+.font-bold {
+  font-weight: 700;
+}
+.text-center {
+  text-align: center;
+}
+.max-w-3xl {
+  max-width: 48rem;
+}
+.max-w-7xl {
+  max-width: 80rem;
+}
+.mx-auto {
+  margin-left: auto;
+  margin-right: auto;
+}
+.flex {
+  display: flex;
+}
+.inline-flex {
+  display: inline-flex;
+}
+.grid {
+  display: grid;
+}
+.items-center {
+  align-items: center;
+}
+.justify-center {
+  justify-content: center;
+}
+.justify-between {
+  justify-content: space-between;
+}
+.gap-2 {
+  gap: 0.5rem;
+}
+.gap-4 {
+  gap: 1rem;
+}
+.gap-6 {
+  gap: 1.5rem;
+}
+.gap-8 {
+  gap: 2rem;
+}
+.gap-16 {
+  gap: 4rem;
+}
+.grid-cols-1 {
+  grid-template-columns: repeat(1, minmax(0, 1fr));
+}
+.grid-cols-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.grid-cols-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.grid-rows-[20px_1fr_20px] {
+  grid-template-rows: 20px 1fr 20px;
+}
+.min-h-screen {
+  min-height: 100vh;
+}
+.relative {
+  position: relative;
+}
+.absolute {
+  position: absolute;
+}
+.rounded-full {
+  border-radius: 9999px;
+}
+.border {
+  border-width: 1px;
+}
+.border-solid {
+  border-style: solid;
+}
+.border-transparent {
+  border-color: transparent;
+}
+.border-gray-300 {
+  border-color: #d1d5db;
+}
+.transition-colors {
+  transition-property: color, background-color, border-color;
+}
+.hover\:bg-gray-50:hover {
+  background-color: var(--gray-50);
+}
+.hover\:bg-[#383838]:hover {
+  background-color: #383838;
+}
+.hover\:bg-[#ccc]:hover {
+  background-color: #ccc;
+}
+.hover\:border-gray-400:hover {
+  border-color: #9ca3af;
+}
+.hover\:border-transparent:hover {
+  border-color: transparent;
+}
+.hover\:underline:hover {
+  text-decoration: underline;
+}
+.hover\:underline-offset-4:hover {
+  text-underline-offset: 4px;
+}
+.focus\:outline-none:focus {
+  outline: none;
+}
+.disabled\:opacity-50:disabled {
+  opacity: 0.5;
+}
+@media (min-width: 640px) {
+  .sm\:p-20 {
+    padding: 5rem;
+  }
+  .sm\:items-start {
+    align-items: flex-start;
+  }
+  .sm\:text-left {
+    text-align: left;
+  }
+  .sm\:text-base {
+    font-size: 1rem;
+  }
+  .sm\:h-12 {
+    height: 3rem;
+  }
+  .sm\:w-auto {
+    width: auto;
+  }
+  .sm\:w-32 {
+    width: 8rem;
+  }
+  .sm\:px-5 {
+    padding-left: 1.25rem;
+    padding-right: 1.25rem;
+  }
+  .sm\:flex-row {
+    flex-direction: row;
+  }
+  .sm\:text-base {
+    font-size: 1rem;
+  }
+  .sm\:h-12 {
+    height: 3rem;
+  }
+  .sm\:w-auto {
+    width: auto;
+  }
+  .sm\:w-32 {
+    width: 8rem;
+  }
+  .sm\:px-5 {
+    padding-left: 1.25rem;
+    padding-right: 1.25rem;
+  }
+}
+@media (min-width: 768px) {
+  .md\:grid-cols-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .md\:grid-cols-3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .md\:w-[158px] {
+    width: 9.875rem;
+  }
+}
+@media (prefers-color-scheme: dark) {
+  .dark\:invert {
+    filter: invert(1);
+  }
+  .dark\:bg-white\/[\.06] {
+    background-color: rgba(255, 255, 255, 0.06);
+  }
+  .dark\:bg-white\/[\.145] {
+    background-color: rgba(255, 255, 255, 0.145);
+  }
+  .dark\:hover\:bg-[#1a1a1a]:hover {
+    background-color: #1a1a1a;
+  }
+  .dark\:hover\:bg-[#ccc]:hover {
+    background-color: #ccc;
+  }
+}

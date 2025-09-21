@@ -1,0 +1,44 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx create-next-app:*)",
+      "Bash(cp:*)",
+      "Bash(rmdir:*)",
+      "Bash(rm:*)",
+      "Bash(npm init:*)",
+      "Bash(npm install:*)",
+      "Bash(npx tailwindcss:*)",
+      "Bash(npm run build:*)",
+      "Bash(npm run type-check:*)",
+      "Bash(timeout:*)",
+      "Bash(npx prisma init:*)",
+      "Bash(npm run db:generate:*)",
+      "Bash(npm run lint)",
+      "Bash(npm run format:check:*)",
+      "Bash(npm run format:*)",
+      "Bash(tree:*)",
+      "mcp__playwright__browser_navigate",
+      "Bash(npm run dev:*)",
+      "Bash(npm uninstall:*)",
+      "mcp__playwright__browser_take_screenshot",
+      "Bash(npm run:*)",
+      "Bash(npx tsx:*)",
+      "Bash(findstr:*)",
+      "Bash(psql:*)",
+      "Bash(net start:*)",
+      "Bash(curl:*)",
+      "mcp__supabase__list_tables",
+      "mcp__supabase__list_migrations",
+      "mcp__supabase__list_extensions",
+      "mcp__supabase__get_advisors",
+      "mcp__supabase__execute_sql",
+      "Bash(git add:*)"
+    ],
+    "deny": [],
+    "ask": []
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "supabase"
+  ]
+}

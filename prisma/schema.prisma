@@ -1,0 +1,138 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Festival {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String
+  description String?
+  website     String?
+  facebook    String?
+  instagram   String?
+  email       String?
+  phone       String?
+
+  startDate   DateTime
+  endDate     DateTime
+  timezone    String   @default("UTC")
+
+  isPublished Boolean  @default(false)
+  isCancelled Boolean  @default(false)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Location
+  venueId     String?
+  venue       Venue?   @relation(fields: [venueId], references: [id])
+  venueCustom String?
+  address     String?
+  city        String?
+  country     String?
+  latitude    Float?
+  longitude   Float?
+
+  // Relations
+  artists     FestivalArtist[]
+  workshops   Workshop[]
+  socials     SocialEvent[]
+
+  @@map("festivals")
+}
+
+model Venue {
+  id        String   @id @default(cuid())
+  name      String
+  address   String?
+  city      String?
+  country   String?
+  latitude  Float?
+  longitude Float?
+
+  festivals Festival[]
+
+  @@map("venues")
+}
+
+model Artist {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  bio       String?
+  website   String?
+  facebook  String?
+  instagram String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  festivals FestivalArtist[]
+  workshops Workshop[]
+
+  @@map("artists")
+}
+
+model FestivalArtist {
+  id        String @id @default(cuid())
+  festival  Festival @relation(fields: [festivalId], references: [id], onDelete: Cascade)
+  artist    Artist   @relation(fields: [artistId], references: [id], onDelete: Cascade)
+
+  festivalId String
+  artistId   String
+
+  @@unique([festivalId, artistId])
+  @@map("festival_artists")
+}
+
+model Workshop {
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  level       String?  @default("mixed")
+
+  startTime   DateTime
+  endTime     DateTime
+
+  festival    Festival @relation(fields: [festivalId], references: [id], onDelete: Cascade)
+  artist      Artist?   @relation(fields: [artistId], references: [id], onDelete: SetNull)
+
+  festivalId String
+  artistId   String?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("workshops")
+}
+
+model SocialEvent {
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+
+  startTime   DateTime
+  endTime     DateTime
+
+  eventType   String   @default("party")
+
+  festival    Festival @relation(fields: [festivalId], references: [id], onDelete: Cascade)
+
+  festivalId String
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("social_events")
+}
