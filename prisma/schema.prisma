@@ -213,3 +213,26 @@ model RateLimit {
   @@unique([clientId, endpoint])
   @@map("rate_limits")
 }
+
+// Audit logging table
+model AuditLog {
+  id           String   @id @default(cuid())
+  timestamp    DateTime @default(now())
+  userId       String?  // User who performed the action
+  action       String   // Type of action performed
+  entityType   String   // Type of entity affected
+  entityId     String?  // ID of entity affected
+  oldValues    Json?    // Previous values before change
+  newValues    Json?    // New values after change
+  metadata     Json?    // Additional metadata
+  ipAddress    String?  // IP address of requester
+  userAgent    String?  // User agent of requester
+  source       String   // Source system/component
+  createdAt    DateTime @default(now())
+
+  @@index([timestamp])
+  @@index([action])
+  @@index([entityType, entityId])
+  @@index([userId])
+  @@map("audit_logs")
+}

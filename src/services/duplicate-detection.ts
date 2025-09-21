@@ -568,7 +568,7 @@ export class DuplicateDetectionService {
           confidence: 0.95,
           reason: `Exact match found: "${duplicate.existingName}"`,
         });
-      } else if (duplicate.matchType === 'high') {
+      } else if (duplicate.matchType === 'medium') {
         suggestions.push({
           type: 'merge',
           entityType: 'festival',
@@ -587,7 +587,7 @@ export class DuplicateDetectionService {
           confidence: 0.9,
           reason: `Exact venue match found: "${duplicate.existingName}"`,
         });
-      } else if (duplicate.matchType === 'high') {
+      } else if (duplicate.matchType === 'medium') {
         suggestions.push({
           type: 'merge',
           entityType: 'venue',

@@ -1,8 +1,65 @@
 import { anthropic } from '@/lib/anthropic';
 import { logger } from '@/lib/logger';
 import { FestivalData } from '@/types';
-import { configService } from '@/lib/config';
 import { ValidationError, ExternalServiceError, ConfigurationError, ErrorUtils, BaseError } from '@/lib/errors';
+
+// Type definitions for raw festival data from AI
+interface RawFestivalData {
+  name: string;
+  description?: string;
+  startDate: string;
+  endDate: string;
+  timezone?: string;
+  registrationDeadline?: string;
+  venue?: RawVenueData;
+  website?: string;
+  facebook?: string;
+  instagram?: string;
+  email?: string;
+  phone?: string;
+  registrationUrl?: string;
+  teachers?: RawTeacherData[];
+  musicians?: RawMusicianData[];
+  prices?: RawPriceData[];
+  tags?: string[];
+  confidence?: number;
+  [key: string]: unknown; // Index signature for dynamic access
+}
+
+interface RawVenueData {
+  name: string;
+  address?: string;
+  city?: string;
+  state?: string;
+  country?: string;
+  postalCode?: string;
+  latitude?: number;
+  longitude?: number;
+}
+
+interface RawTeacherData {
+  name: string;
+  specialties?: string[];
+}
+
+interface RawMusicianData {
+  name: string;
+  genre?: string[];
+}
+
+interface RawPriceData {
+  type: string;
+  amount: number;
+  currency: string;
+  deadline?: string;
+  description?: string;
+}
+
+interface ValidationIssue {
+  field: string;
+  message: string;
+  severity: 'error' | 'warning';
+}
 
 export interface ScrapingResult {
   success: boolean;
@@ -18,9 +75,15 @@ export interface ScrapingResult {
 }
 
 export class ScrapingService {
-  private readonly CONFIDENCE_THRESHOLD = 0.85;
-  private readonly MAX_PAGES = 15;
-  private readonly TIMEOUT = 30000;
+  private readonly CONFIDENCE_THRESHOLD: number;
+  private readonly MAX_PAGES: number;
+  private readonly TIMEOUT: number;
+
+  constructor() {
+    this.CONFIDENCE_THRESHOLD = parseFloat(process.env.SCRAPING_CONFIDENCE_THRESHOLD || '0.85');
+    this.MAX_PAGES = parseInt(process.env.SCRAPING_MAX_PAGES || '15');
+    this.TIMEOUT = parseInt(process.env.SCRAPING_TIMEOUT || '30000');
+  }
 
   async scrapeFestivalUrl(url: string): Promise<ScrapingResult> {
     const startTime = Date.now();
@@ -330,10 +393,13 @@ export class ScrapingService {
     sourceUrl: string
   ): Promise<{ success: boolean; data?: FestivalData; confidence: number; error?: string }> {
     try {
+      // Preprocess content for AI consumption
+      const processedContent = this.preprocessContent(content);
+
       // Truncate content if too long (Claude context limits)
-      const truncatedContent = content.length > 100000
-        ? content.substring(0, 100000) + '...[content truncated]'
-        : content;
+      const truncatedContent = processedContent.length > 100000
+        ? processedContent.substring(0, 100000) + '...[content truncated]'
+        : processedContent;
 
       const prompt = this.buildExtractionPrompt(truncatedContent, sourceUrl);
 
@@ -358,11 +424,66 @@ export class ScrapingService {
 
       const festivalData = JSON.parse(jsonMatch[0]);
 
+      // Validate JSON schema
+      const schemaValidation = this.validateJsonSchema(festivalData);
+      if (!schemaValidation.isValid) {
+        throw new Error(`Invalid data schema: ${schemaValidation.errors.join(', ')}`);
+      }
+
+      // Validate 1940s presenter style
+      const styleValidation = this.validate1940sStyle(contentText);
+      if (!styleValidation.passed) {
+        logger.warn('Style validation failed', { issues: styleValidation.issues });
+      }
+
+      // Validate English language
+      const languageValidation = this.validateEnglishLanguage(contentText);
+      if (!languageValidation.isEnglish) {
+        logger.warn('Language validation failed', {
+          detectedLanguage: languageValidation.detectedLanguage,
+          confidence: languageValidation.confidence
+        });
+      }
+
       // Normalize and validate data structure
       const normalizedData = this.normalizeFestivalData(festivalData, sourceUrl);
 
       // Calculate confidence score
       const confidence = this.calculateConfidenceScore(normalizedData);
+
+      // Apply quality scoring and auto-retry if needed
+      if (confidence < this.CONFIDENCE_THRESHOLD) {
+        logger.info('Low confidence score, attempting retry', { confidence, threshold: this.CONFIDENCE_THRESHOLD });
+
+        // Retry with exponential backoff
+        const retryResult = await this.retryWithBackoff(
+          async () => {
+            const retryPrompt = this.buildRetryPrompt(truncatedContent, sourceUrl, confidence);
+            const retryResponse = await anthropic.messages.create({
+              model: process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022',
+              max_tokens: 4000,
+              messages: [{ role: 'user', content: retryPrompt }],
+            });
+
+            const retryContentText = retryResponse.content[0].type === 'text' ? retryResponse.content[0].text : '';
+            const retryJsonMatch = retryContentText.match(/\{[\s\S]*\}/);
+            if (!retryJsonMatch) throw new Error('No valid JSON found in retry response');
+
+            const retryFestivalData = JSON.parse(retryJsonMatch[0]);
+            const retryNormalized = this.normalizeFestivalData(retryFestivalData, sourceUrl);
+            return { data: retryNormalized, confidence: this.calculateConfidenceScore(retryNormalized) };
+          },
+          2 // max retries
+        );
+
+        if (retryResult.success && retryResult.data) {
+          return {
+            success: true,
+            data: retryResult.data.data,
+            confidence: retryResult.data.confidence,
+          };
+        }
+      }
 
       return {
         success: true,
@@ -382,7 +503,7 @@ export class ScrapingService {
   }
 
   private buildExtractionPrompt(content: string, sourceUrl: string): string {
-    return `You are an expert festival data extractor analyzing a website about a swing/blues music festival. Extract all relevant information in JSON format with the following structure:
+    return `Greetings, music enthusiast! I'm here to help you gather all the delightful details about this swing and blues festival. Let's extract the information in proper JSON format, shall we?
 
 {
   "name": "Festival name",
@@ -432,23 +553,23 @@ export class ScrapingService {
   "confidence": 0.95
 }
 
-Rules:
-1. Only include fields with actual data from the website
-2. Use empty arrays for teachers/musicians if none found
-3. Use best estimates for dates if not explicitly stated
-4. Set confidence score based on data completeness and clarity
-5. All text must be in English
-6. Present information in clear, professional manner
-7. Date format must be YYYY-MM-DD
-8. For prices, use only the specified currency codes
-9. For venue, provide the most complete address information available
+Here's what I'll be looking for, my friend:
+• Only include fields with actual information from the website
+• Use empty arrays for teachers/musicians if none are found
+• Make your best estimate for dates if not explicitly stated
+• Set confidence score based on data completeness and clarity
+• All text must be presented in fine English
+• Keep the presentation professional and clear
+• Date format must be YYYY-MM-DD
+• For prices, use only the specified currency codes
+• For venue, provide the most complete address information available
 
-Website content from ${sourceUrl}:
+Now, let's see what wonderful details we can gather from ${sourceUrl}:
 
 ${content}`;
   }
 
-  private normalizeFestivalData(rawData: any, sourceUrl: string): FestivalData {
+  private normalizeFestivalData(rawData: RawFestivalData, sourceUrl: string): FestivalData {
     // Convert date strings to Date objects
     const normalizeDate = (dateStr: string | undefined): Date | undefined => {
       if (!dateStr) return undefined;
@@ -465,12 +586,12 @@ ${content}`;
     };
 
     // Sanitize string inputs
-    const sanitizeString = (input: any): string | undefined => {
+    const sanitizeString = (input: unknown): string | undefined => {
       if (typeof input !== 'string') return undefined;
       return input.trim().slice(0, 1000); // Limit length
     };
 
-    const sanitizeArray = (input: any): string[] => {
+    const sanitizeArray = (input: unknown): string[] => {
       if (!Array.isArray(input)) return [];
       return input
         .filter(item => typeof item === 'string')
@@ -480,15 +601,15 @@ ${content}`;
     };
 
     // Validate coordinates
-    const validateCoordinate = (coord: any): number | undefined => {
+    const validateCoordinate = (coord: unknown): number | undefined => {
       if (typeof coord !== 'number') return undefined;
       if (coord < -90 || coord > 90) return undefined; // Latitude bounds
       return coord;
     };
 
     // Validate price amount
-    const validatePrice = (amount: any): number => {
-      const num = parseFloat(amount);
+    const validatePrice = (amount: unknown): number => {
+      const num = typeof amount === 'number' ? amount : parseFloat(amount as string);
       return isNaN(num) || num < 0 ? 0 : num;
     };
 
@@ -517,17 +638,17 @@ ${content}`;
         latitude: validateCoordinate(rawData.venue.latitude),
         longitude: validateCoordinate(rawData.venue.longitude),
       } : undefined,
-      teachers: Array.isArray(rawData.teachers) ? rawData.teachers.slice(0, 20).map((teacher: any) => ({
+      teachers: Array.isArray(rawData.teachers) ? rawData.teachers.slice(0, 20).map((teacher: RawTeacherData) => ({
         name: sanitizeString(teacher.name) || 'Unknown Teacher',
         specialties: Array.isArray(teacher.specialties) ?
-          teacher.specialties.slice(0, 10).map((s: any) => sanitizeString(s)).filter(Boolean) : [],
+          teacher.specialties.slice(0, 10).map((s: unknown) => sanitizeString(s)).filter((s): s is string => Boolean(s)) : [],
       })) : [],
-      musicians: Array.isArray(rawData.musicians) ? rawData.musicians.slice(0, 20).map((musician: any) => ({
+      musicians: Array.isArray(rawData.musicians) ? rawData.musicians.slice(0, 20).map((musician: RawMusicianData) => ({
         name: sanitizeString(musician.name) || 'Unknown Musician',
         genre: Array.isArray(musician.genre) ?
-          musician.genre.slice(0, 10).map((g: any) => sanitizeString(g)).filter(Boolean) : [],
+          musician.genre.slice(0, 10).map((g: unknown) => sanitizeString(g)).filter((g): g is string => Boolean(g)) : [],
       })) : [],
-      prices: Array.isArray(rawData.prices) ? rawData.prices.slice(0, 10).map((price: any) => ({
+      prices: Array.isArray(rawData.prices) ? rawData.prices.slice(0, 10).map((price: RawPriceData) => ({
         type: ['early_bird', 'regular', 'late', 'student', 'local', 'vip', 'donation'].includes(price.type) ?
           price.type : 'regular',
         amount: validatePrice(price.amount),
@@ -595,6 +716,228 @@ ${content}`;
     }
 
     return Math.min(1, Math.max(0, score / maxScore));
+  }
+
+  private preprocessContent(content: string): string {
+    // Remove excessive whitespace
+    let processed = content.replace(/\s+/g, ' ');
+
+    // Remove script and style tags content
+    processed = processed.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+    processed = processed.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+
+    // Remove HTML comments
+    processed = processed.replace(/<!--[\s\S]*?-->/g, '');
+
+    // Remove navigation, footer, header elements (basic pattern)
+    processed = processed.replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, '');
+    processed = processed.replace(/<footer[^>]*>[\s\S]*?<\/footer>/gi, '');
+    processed = processed.replace(/<header[^>]*>[\s\S]*?<\/header>/gi, '');
+
+    // Normalize HTML structure
+    processed = processed.replace(/<br\s*\/?>/gi, '\n');
+    processed = processed.replace(/<\/p>/gi, '\n');
+    processed = processed.replace(/<\/div>/gi, '\n');
+    processed = processed.replace(/<\/h[1-6]>/gi, '\n');
+
+    // Remove remaining HTML tags but preserve content
+    processed = processed.replace(/<[^>]+>/g, '');
+
+    // Clean up excessive newlines and spaces
+    processed = processed.replace(/\n\s*\n/g, '\n');
+    processed = processed.replace(/^\s+|\s+$/gm, '');
+
+    // Ensure proper spacing around text
+    processed = processed.replace(/([a-z])([A-Z])/g, '$1 $2');
+
+    return processed.trim();
+  }
+
+  private validateJsonSchema(data: RawFestivalData): { isValid: boolean; errors: string[] } {
+    const errors: string[] = [];
+
+    // Required fields validation
+    if (!data.name || typeof data.name !== 'string') {
+      errors.push('name is required and must be a string');
+    }
+
+    if (!data.startDate || typeof data.startDate !== 'string') {
+      errors.push('startDate is required and must be a string');
+    }
+
+    if (!data.endDate || typeof data.endDate !== 'string') {
+      errors.push('endDate is required and must be a string');
+    }
+
+    // Venue validation
+    if (data.venue && typeof data.venue === 'object') {
+      if (!data.venue.name || typeof data.venue.name !== 'string') {
+        errors.push('venue.name is required when venue is provided');
+      }
+    }
+
+    // Array fields validation
+    const arrayFields = ['teachers', 'musicians', 'prices', 'tags'];
+    arrayFields.forEach(field => {
+      if (data[field] && !Array.isArray(data[field])) {
+        errors.push(`${field} must be an array if provided`);
+      }
+    });
+
+    // Price validation
+    if (data.prices && Array.isArray(data.prices)) {
+      data.prices.forEach((price: RawPriceData, index: number) => {
+        if (!price.type || !['early_bird', 'regular', 'late', 'student', 'local', 'vip', 'donation'].includes(price.type)) {
+          errors.push(`prices[${index}].type must be one of: early_bird, regular, late, student, local, vip, donation`);
+        }
+        if (typeof price.amount !== 'number' || price.amount < 0) {
+          errors.push(`prices[${index}].amount must be a positive number`);
+        }
+        if (!['USD', 'EUR', 'GBP', 'CHF'].includes(price.currency)) {
+          errors.push(`prices[${index}].currency must be one of: USD, EUR, GBP, CHF`);
+        }
+      });
+    }
+
+    // Date format validation
+    const dateFields = ['startDate', 'endDate', 'registrationDeadline'];
+    dateFields.forEach(field => {
+      const fieldValue = data[field as keyof RawFestivalData];
+      if (typeof fieldValue === 'string') {
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        if (!dateRegex.test(fieldValue)) {
+          errors.push(`${field} must be in YYYY-MM-DD format`);
+        }
+      }
+    });
+
+    // URL validation
+    const urlFields = ['website', 'facebook', 'instagram', 'registrationUrl'];
+    urlFields.forEach(field => {
+      const fieldValue = data[field as keyof RawFestivalData];
+      if (typeof fieldValue === 'string') {
+        try {
+          new URL(fieldValue);
+        } catch {
+          errors.push(`${field} must be a valid URL`);
+        }
+      }
+    });
+
+    return {
+      isValid: errors.length === 0,
+      errors
+    };
+  }
+
+  private validate1940sStyle(text: string): { passed: boolean; issues: string[] } {
+    const issues: string[] = [];
+
+    // Check for overly modern slang
+    const modernSlang = ['lit', 'fire', 'basic', 'salty', 'extra', 'flex', 'woke', 'cancel', 'stan'];
+    modernSlang.forEach(term => {
+      if (text.toLowerCase().includes(term)) {
+        issues.push(`Contains modern slang: ${term}`);
+      }
+    });
+
+    // Check for appropriate tone indicators
+    const friendlyTerms = ['my friend', 'shall we', 'delightful', 'wonderful', 'charming', 'lovely'];
+    const hasFriendlyTone = friendlyTerms.some(term => text.toLowerCase().includes(term));
+
+    if (!hasFriendlyTone) {
+      issues.push('Lacks friendly, welcoming tone');
+    }
+
+    // Check for overly casual or aggressive language
+    const aggressivePatterns = [/!\s*!/g, /\b(u r|ur|r u)\b/gi, /\b(wtf|omg|lol)\b/gi];
+    aggressivePatterns.forEach(pattern => {
+      if (pattern.test(text)) {
+        issues.push('Contains overly casual or aggressive language');
+      }
+    });
+
+    return {
+      passed: issues.length <= 1, // Allow minor issues
+      issues
+    };
+  }
+
+  private validateEnglishLanguage(text: string): {
+    isEnglish: boolean;
+    detectedLanguage?: string;
+    confidence: number;
+  } {
+    // Basic English language detection using common English words
+    const commonEnglishWords = [
+      'the', 'be', 'to', 'of', 'and', 'a', 'in', 'that', 'have', 'it', 'for', 'not', 'on', 'with', 'he', 'as', 'you', 'do', 'at', 'this', 'but', 'his', 'by', 'from', 'they', 'we', 'say', 'her', 'she', 'or', 'an', 'will', 'my', 'one', 'all', 'would', 'there', 'their', 'what', 'so', 'up', 'out', 'if', 'about', 'who', 'get', 'which', 'go', 'me', 'when', 'make', 'can', 'like', 'time', 'no', 'just', 'him', 'know', 'take', 'people', 'into', 'year', 'your', 'good', 'some', 'could', 'them', 'see', 'other', 'than', 'then', 'now', 'look', 'only', 'come', 'its', 'over', 'think', 'also', 'back', 'after', 'use', 'two', 'how', 'our', 'work', 'first', 'well', 'way', 'even', 'new', 'want', 'because', 'any', 'these', 'give', 'day', 'most', 'us', 'festival', 'music', 'dance', 'swing', 'blues'
+    ];
+
+    const words = text.toLowerCase().split(/\s+/).filter(word => word.length > 2);
+    const englishWordCount = words.filter(word => commonEnglishWords.includes(word)).length;
+
+    const englishRatio = words.length > 0 ? englishWordCount / words.length : 0;
+
+    // Check for non-English character patterns (basic detection)
+    const nonEnglishPatterns = /[^\x00-\x7F]/g;
+    const nonEnglishChars = text.match(nonEnglishPatterns) || [];
+    const nonEnglishRatio = nonEnglishChars.length / text.length;
+
+    // Simple heuristic: if > 60% common English words and < 10% non-English characters, likely English
+    const isEnglish = englishRatio > 0.6 && nonEnglishRatio < 0.1;
+
+    return {
+      isEnglish,
+      confidence: Math.max(englishRatio, 1 - nonEnglishRatio),
+      detectedLanguage: isEnglish ? 'english' : 'unknown'
+    };
+  }
+
+  private async retryWithBackoff<T>(
+    operation: () => Promise<T>,
+    maxRetries: number = 2
+  ): Promise<{ success: boolean; data?: T; error?: string }> {
+    let attempt = 0;
+
+    while (attempt < maxRetries) {
+      try {
+        const result = await operation();
+        return { success: true, data: result };
+      } catch (error) {
+        attempt++;
+
+        if (attempt === maxRetries) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          logger.warn('Retry attempts exhausted', { attempt: maxRetries, error: errorMessage });
+          return { success: false, error: errorMessage };
+        }
+
+        // Exponential backoff with jitter
+        const baseDelay = Math.pow(2, attempt) * 1000;
+        const jitter = Math.random() * 500;
+        const delay = baseDelay + jitter;
+
+        logger.info('Retrying operation', { attempt, maxRetries, delay });
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+
+    return { success: false, error: 'Max retries exceeded' };
+  }
+
+  private buildRetryPrompt(content: string, sourceUrl: string, previousConfidence: number): string {
+    return `My friend, let's try again to extract the festival information from this website. The previous attempt had a confidence score of ${previousConfidence}, which was below our threshold of ${this.CONFIDENCE_THRESHOLD}.
+
+Please be extra careful to provide complete and accurate information:
+
+${this.buildExtractionPrompt(content, sourceUrl)}
+
+Remember to focus particularly on:
+• Complete venue information with address
+• All teacher and musician names with their specialties
+• Accurate dates in YYYY-MM-DD format
+• Complete pricing information with proper currency codes
+• High-quality, comprehensive data to achieve a confidence score above ${this.CONFIDENCE_THRESHOLD}`;
   }
 }
 

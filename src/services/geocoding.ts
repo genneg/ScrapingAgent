@@ -1,5 +1,24 @@
 import { Client } from '@googlemaps/google-maps-services-js';
 import { logger } from '@/lib/logger';
+import { SecurityUtils } from '@/lib/security-utils';
+
+// Type definitions for Google Maps API responses
+interface GoogleMapsResult {
+  geometry: {
+    location: {
+      lat: number;
+      lng: number;
+    };
+    location_type?: string;
+  };
+  formatted_address: string;
+  address_components: AddressComponent[];
+}
+
+interface AddressComponent {
+  long_name: string;
+  types: string[];
+}
 
 export interface GeocodeResult {
   success: boolean;
@@ -8,6 +27,7 @@ export interface GeocodeResult {
   formattedAddress?: string;
   confidence?: number;
   error?: string;
+  cachedAt?: number; // Timestamp when cached
 }
 
 export interface ReverseGeocodeResult {
@@ -22,15 +42,84 @@ export interface ReverseGeocodeResult {
   error?: string;
 }
 
+// Simple LRU Cache implementation
+class LRUCache<K, V> {
+  private cache = new Map<K, { value: V; timestamp: number }>();
+  private maxSize: number;
+
+  constructor(maxSize: number = 1000) {
+    this.maxSize = maxSize;
+  }
+
+  set(key: K, value: V): void {
+    if (this.cache.size >= this.maxSize) {
+      // Remove the oldest entry
+      const firstKey = this.cache.keys().next().value;
+      if (firstKey !== undefined) {
+        this.cache.delete(firstKey);
+      }
+    }
+    this.cache.set(key, { value, timestamp: Date.now() });
+  }
+
+  get(key: K): V | undefined {
+    const entry = this.cache.get(key);
+    if (!entry) return undefined;
+
+    // Move to end (most recently used)
+    this.cache.delete(key);
+    this.cache.set(key, entry);
+
+    return entry.value;
+  }
+
+  has(key: K): boolean {
+    return this.cache.has(key);
+  }
+
+  delete(key: K): boolean {
+    return this.cache.delete(key);
+  }
+
+  clear(): void {
+    this.cache.clear();
+  }
+
+  size(): number {
+    return this.cache.size;
+  }
+
+  // Remove expired entries
+  cleanup(ttl: number): number {
+    const now = Date.now();
+    let removed = 0;
+
+    for (const [key, entry] of this.cache.entries()) {
+      if (now - entry.timestamp > ttl) {
+        this.cache.delete(key);
+        removed++;
+      }
+    }
+
+    return removed;
+  }
+
+  keys(): IterableIterator<K> {
+    return this.cache.keys();
+  }
+}
+
 export class GeocodingService {
   private client: Client;
   private apiKey: string;
-  private cache: Map<string, GeocodeResult> = new Map();
+  private cache: LRUCache<string, GeocodeResult>;
   private readonly CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+  private readonly MAX_CACHE_SIZE = 1000; // Maximum number of cached entries
 
   constructor() {
     this.client = new Client({});
     this.apiKey = process.env.GOOGLE_MAPS_API_KEY || '';
+    this.cache = new LRUCache(this.MAX_CACHE_SIZE);
 
     if (!this.apiKey) {
       logger.warn('Google Maps API key not configured');
@@ -56,7 +145,7 @@ export class GeocodingService {
       // Build full address string
       const fullAddress = this.buildFullAddress(address, city, country);
 
-      logger.info('Geocoding address', { address: fullAddress });
+      logger.info('Geocoding address', { address: SecurityUtils.sanitizeForLogging(fullAddress) });
 
       const response = await this.client.geocode({
         params: {
@@ -76,13 +165,14 @@ export class GeocodingService {
           longitude: location.lng,
           formattedAddress: result.formatted_address,
           confidence,
+          cachedAt: Date.now(),
         };
 
         // Cache the result
         this.cache.set(cacheKey, geocodeResult);
 
         logger.info('Geocoding successful', {
-          address: fullAddress,
+          address: SecurityUtils.sanitizeForLogging(fullAddress),
           latitude: location.lat,
           longitude: location.lng,
           confidence,
@@ -91,11 +181,15 @@ export class GeocodingService {
         return geocodeResult;
       } else {
         const error = response.data.error_message || `Geocoding failed: ${response.data.status}`;
-        logger.warn('Geocoding failed', { address: fullAddress, error });
+        logger.warn('Geocoding failed', {
+          address: SecurityUtils.sanitizeForLogging(fullAddress),
+          error: SecurityUtils.sanitizeForLogging(error)
+        });
 
         const result: GeocodeResult = {
           success: false,
           error,
+          cachedAt: Date.now(),
         };
 
         // Cache failed results briefly to avoid repeated calls
@@ -106,7 +200,10 @@ export class GeocodingService {
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown geocoding error';
-      logger.error('Geocoding service error', { error: errorMessage, address });
+      logger.error('Geocoding service error', {
+          error: SecurityUtils.sanitizeForLogging(errorMessage),
+          address: SecurityUtils.sanitizeForLogging(address)
+        });
 
       return {
         success: false,
@@ -209,27 +306,34 @@ export class GeocodingService {
   }
 
   private isCacheValid(result: GeocodeResult): boolean {
-    // For now, assume cache is always valid if it exists
-    // In a real implementation, you'd store timestamps and check TTL
-    return true;
+    if (!result.cachedAt) return false;
+
+    const now = Date.now();
+    const age = now - result.cachedAt;
+
+    // Successful results cache longer than failed ones
+    const ttl = result.success ? this.CACHE_TTL : this.CACHE_TTL / 4; // Failed results cache for 6 hours
+
+    return age < ttl;
   }
 
-  private calculateConfidence(result: any): number {
+  private calculateConfidence(result: GoogleMapsResult): number {
     let confidence = 0.5; // Base confidence
 
     // Check location type
     if (result.geometry.location_type === 'ROOFTOP') confidence += 0.3;
     else if (result.geometry.location_type === 'RANGE_INTERPOLATED') confidence += 0.2;
     else if (result.geometry.location_type === 'GEOMETRIC_CENTER') confidence += 0.1;
+    else if (!result.geometry.location_type) confidence += 0.05; // Unknown location type
 
     // Check address components completeness
-    const hasStreet = result.address_components.some((comp: any) =>
+    const hasStreet = result.address_components.some((comp: AddressComponent) =>
       comp.types.includes('route')
     );
-    const hasCity = result.address_components.some((comp: any) =>
+    const hasCity = result.address_components.some((comp: AddressComponent) =>
       comp.types.includes('locality')
     );
-    const hasCountry = result.address_components.some((comp: any) =>
+    const hasCountry = result.address_components.some((comp: AddressComponent) =>
       comp.types.includes('country')
     );
 
@@ -240,7 +344,7 @@ export class GeocodingService {
     return Math.min(1.0, confidence);
   }
 
-  private parseAddressComponents(components: any[]): {
+  private parseAddressComponents(components: AddressComponent[]): {
     street?: string;
     city?: string;
     state?: string;
@@ -361,10 +465,19 @@ export class GeocodingService {
     logger.info('Geocoding cache cleared');
   }
 
+  // Clean up expired cache entries
+  cleanupCache(): number {
+    const removed = this.cache.cleanup(this.CACHE_TTL);
+    if (removed > 0) {
+      logger.info(`Cleaned up ${removed} expired geocoding cache entries`);
+    }
+    return removed;
+  }
+
   // Get cache statistics
   getCacheStats(): { size: number; keys: string[] } {
     return {
-      size: this.cache.size,
+      size: this.cache.size(),
       keys: Array.from(this.cache.keys()),
     };
   }

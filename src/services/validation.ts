@@ -106,9 +106,8 @@ export const validationSchemas = {
   ...validationSchemasBase,
   // Login credentials validation (defined after to avoid circular reference)
   // Scraping request validation (defined after to avoid circular reference)
-} as typeof validationSchemasBase & {
-  loginCredentials: z.ZodObject<any, any, any, any, any>;
-  scrapingRequest: z.ZodObject<any, any, any, any, any>;
+  loginCredentials: {} as any, // Will be defined below
+  scrapingRequest: {} as any, // Will be defined below
 };
 
 // Add schemas that reference others to avoid circular references
@@ -148,12 +147,12 @@ export interface ValidationWarning {
   code: string;
 }
 
-// Zod schema for festival data validation
-const festivalSchema = z.object({
+// Schema for raw festival data (with string dates)
+const rawFestivalSchema = z.object({
   name: z.string().min(3, 'Festival name must be at least 3 characters'),
   description: z.string().optional(),
-  startDate: z.date(),
-  endDate: z.date(),
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Start date must be in YYYY-MM-DD format'),
+  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'End date must be in YYYY-MM-DD format'),
   venue: z.object({
     name: z.string().min(1, 'Venue name is required'),
     address: z.string().optional(),
@@ -204,15 +203,11 @@ export class ValidationService {
         endDate: data.endDate
       });
 
-      // Preprocess data: convert string dates to Date objects
-      const processedData = {
-        ...data,
-        startDate: data.startDate instanceof Date ? data.startDate : new Date(data.startDate),
-        endDate: data.endDate instanceof Date ? data.endDate : new Date(data.endDate),
-      };
+      // Convert FestivalData to raw format for validation
+      const rawData = this.festivalDataToRaw(data);
 
       // Zod schema validation
-      const schemaResult = festivalSchema.safeParse(processedData);
+      const schemaResult = rawFestivalSchema.safeParse(rawData);
       if (!schemaResult.success) {
         schemaResult.error.issues.forEach((issue) => {
           errors.push({
@@ -223,7 +218,8 @@ export class ValidationService {
           });
         });
       } else {
-        normalizedData = schemaResult.data;
+        // Convert back to FestivalData with proper Date objects
+        normalizedData = this.rawDataToFestivalData(schemaResult.data);
       }
 
       // Business rule validations
@@ -529,6 +525,34 @@ export class ValidationService {
     totalFields += 4; // For the array checks
 
     return presentFields / totalFields;
+  }
+
+  private festivalDataToRaw(data: FestivalData): any {
+    return {
+      ...data,
+      startDate: data.startDate instanceof Date ? data.startDate.toISOString().split('T')[0] : data.startDate,
+      endDate: data.endDate instanceof Date ? data.endDate.toISOString().split('T')[0] : data.endDate,
+      registrationDeadline: data.registrationDeadline instanceof Date ?
+        data.registrationDeadline.toISOString().split('T')[0] : data.registrationDeadline,
+      prices: data.prices?.map(price => ({
+        ...price,
+        deadline: price.deadline instanceof Date ?
+          price.deadline.toISOString().split('T')[0] : price.deadline
+      })) || []
+    };
+  }
+
+  private rawDataToFestivalData(rawData: any): FestivalData {
+    return {
+      ...rawData,
+      startDate: new Date(rawData.startDate),
+      endDate: new Date(rawData.endDate),
+      registrationDeadline: rawData.registrationDeadline ? new Date(rawData.registrationDeadline) : undefined,
+      prices: rawData.prices?.map((price: any) => ({
+        ...price,
+        deadline: price.deadline ? new Date(price.deadline) : undefined
+      })) || []
+    };
   }
 }
 
