@@ -9,13 +9,13 @@ export interface WebSocketProgress {
   stage: string;
   progress: number;
   message: string;
-  data?: any;
+  data?: Record<string, unknown>;
   timestamp: string;
 }
 
 export interface ScrapingProgress extends WebSocketProgress {
   type: 'scraping';
-  stage: 'fetching' | 'analyzing' | 'extracting' | 'validating' | 'completed';
+  stage: 'fetching' | 'analyzing' | 'extracting' | 'validating' | 'completed' | 'error';
   url?: string;
   pagesProcessed?: number;
   totalPages?: number;
@@ -25,7 +25,7 @@ export interface ScrapingProgress extends WebSocketProgress {
 export interface ValidationProgress extends WebSocketProgress {
   type: 'validation';
   stage: 'schema' | 'business-rules' | 'duplicates' | 'geocoding' | 'completed';
-  validationResults?: any;
+  validationResults?: Record<string, unknown>;
   errorCount?: number;
   warningCount?: number;
 }

@@ -2,6 +2,7 @@ import { anthropic } from '@/lib/anthropic';
 import { logger } from '@/lib/logger';
 import { FestivalData } from '@/types';
 import { ValidationError, ExternalServiceError } from '@/lib/errors';
+import { websocketService, ScrapingProgress } from '@/lib/websocket';
 
 // Type definitions for raw festival data from AI
 interface RawFestivalData {
@@ -80,7 +81,7 @@ export class ScrapingService {
     this.TIMEOUT = parseInt(process.env.SCRAPING_TIMEOUT || '30000');
   }
 
-  async scrapeFestivalUrl(url: string): Promise<ScrapingResult> {
+  async scrapeFestivalUrl(url: string, sessionId?: string): Promise<ScrapingResult> {
     const startTime = Date.now();
     const metadata = {
       url,
@@ -90,23 +91,73 @@ export class ScrapingService {
     };
 
     try {
-      logger.info('Starting festival scraping', { url });
+      logger.info('Starting festival scraping', { url, sessionId });
+
+      // Send initial progress update
+      if (sessionId) {
+        this.sendProgressUpdate(sessionId, {
+          stage: 'fetching',
+          progress: 0,
+          message: 'Starting URL validation...',
+          url,
+          pagesProcessed: 0,
+          totalPages: 0,
+        });
+      }
 
       // URL validation
       if (!this.isValidUrl(url)) {
+        if (sessionId) {
+          this.sendProgressUpdate(sessionId, {
+            stage: 'fetching',
+            progress: 0,
+            message: 'URL validation failed',
+            url,
+          });
+        }
         throw new ValidationError('Invalid URL format', 'url', url);
       }
 
       // Fetch website content with multi-page exploration
-      const websiteContent = await this.fetchWebsiteContentWithExploration(url);
+      if (sessionId) {
+        this.sendProgressUpdate(sessionId, {
+          stage: 'fetching',
+          progress: 10,
+          message: 'Fetching website content...',
+          url,
+          pagesProcessed: 0,
+          totalPages: this.MAX_PAGES,
+        });
+      }
+
+      const websiteContent = await this.fetchWebsiteContentWithExploration(url, sessionId);
       metadata.pagesExplored = websiteContent.pagesExplored;
 
       // Extract festival data using Claude
-      const extractionResult = await this.extractFestivalData(websiteContent.content, url);
+      if (sessionId) {
+        this.sendProgressUpdate(sessionId, {
+          stage: 'extracting',
+          progress: 60,
+          message: 'Extracting festival data with AI...',
+          url,
+          pagesProcessed: metadata.pagesExplored,
+          totalPages: this.MAX_PAGES,
+        });
+      }
+
+      const extractionResult = await this.extractFestivalData(websiteContent.content, url, sessionId);
 
       metadata.processingTime = Date.now() - startTime;
 
       if (!extractionResult.success || !extractionResult.data) {
+        if (sessionId) {
+          this.sendProgressUpdate(sessionId, {
+            stage: 'error',
+            progress: 0,
+            message: 'Failed to extract festival data',
+            url,
+          });
+        }
         throw new ExternalServiceError(
           'claude-ai',
           extractionResult.error || 'Failed to extract festival data'
@@ -118,6 +169,37 @@ export class ScrapingService {
         logger.warn('Low confidence score detected', {
           url,
           confidence: extractionResult.confidence
+        });
+
+        if (sessionId) {
+          this.sendProgressUpdate(sessionId, {
+            stage: 'validating',
+            progress: 90,
+            message: `Low confidence detected (${Math.round(extractionResult.confidence * 100)}%)`,
+            url,
+            confidence: extractionResult.confidence,
+          });
+        }
+      } else if (sessionId) {
+        this.sendProgressUpdate(sessionId, {
+          stage: 'validating',
+          progress: 90,
+          message: `Data validated successfully (${Math.round(extractionResult.confidence * 100)}% confidence)`,
+          url,
+          confidence: extractionResult.confidence,
+        });
+      }
+
+      // Send completion update
+      if (sessionId) {
+        this.sendProgressUpdate(sessionId, {
+          stage: 'completed',
+          progress: 100,
+          message: 'Scraping completed successfully',
+          url,
+          pagesProcessed: metadata.pagesExplored,
+          totalPages: this.MAX_PAGES,
+          confidence: extractionResult.confidence,
         });
       }
 
@@ -137,6 +219,16 @@ export class ScrapingService {
         error: errorMessage,
         processingTime: metadata.processingTime
       });
+
+      // Send error update via WebSocket
+      if (sessionId) {
+        this.sendProgressUpdate(sessionId, {
+          stage: 'error',
+          progress: 0,
+          message: errorMessage,
+          url,
+        });
+      }
 
       return {
         success: false,
@@ -194,7 +286,8 @@ export class ScrapingService {
   }
 
   private async fetchWebsiteContentWithExploration(
-    url: string
+    url: string,
+    sessionId?: string
   ): Promise<{ content: string; pagesExplored: number }> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.TIMEOUT);
@@ -204,7 +297,7 @@ export class ScrapingService {
       const mainContent = await this.fetchPageContent(url, controller);
 
       // Extract and explore additional pages
-      const additionalPages = await this.exploreAdditionalPages(url, mainContent, controller);
+      const additionalPages = await this.exploreAdditionalPages(url, mainContent, controller, sessionId);
 
       clearTimeout(timeoutId);
 
@@ -250,7 +343,8 @@ export class ScrapingService {
   private async exploreAdditionalPages(
     baseUrl: string,
     mainContent: string,
-    controller: AbortController
+    controller: AbortController,
+    sessionId?: string
   ): Promise<Array<{ url: string; content: string; priority: number }>> {
     const pages: Array<{ url: string; content: string; priority: number }> = [];
     const baseUrlObj = new URL(baseUrl);
@@ -385,7 +479,8 @@ export class ScrapingService {
 
   private async extractFestivalData(
     content: string,
-    sourceUrl: string
+    sourceUrl: string,
+    sessionId?: string
   ): Promise<{ success: boolean; data?: FestivalData; confidence: number; error?: string }> {
     try {
       // Preprocess content for AI consumption
@@ -933,6 +1028,26 @@ Remember to focus particularly on:
 • Accurate dates in YYYY-MM-DD format
 • Complete pricing information with proper currency codes
 • High-quality, comprehensive data to achieve a confidence score above ${this.CONFIDENCE_THRESHOLD}`;
+  }
+
+  /**
+   * Send progress update via WebSocket
+   */
+  private sendProgressUpdate(sessionId: string, progress: Omit<ScrapingProgress, 'type' | 'timestamp'>) {
+    try {
+      const scrapingProgress: ScrapingProgress = {
+        type: 'scraping',
+        timestamp: new Date().toISOString(),
+        ...progress,
+      };
+
+      websocketService.sendScrapingProgress(sessionId, scrapingProgress);
+    } catch (error) {
+      logger.warn('Failed to send WebSocket progress update', {
+        sessionId,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
   }
 }
 

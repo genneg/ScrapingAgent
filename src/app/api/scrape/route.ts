@@ -67,12 +67,16 @@ export async function POST(request: NextRequest) {
       url: sanitizedUrl
     });
 
-    // Execute scraping
-    const result = await scrapingService.scrapeFestivalUrl(sanitizedUrl);
+    // Generate session ID for WebSocket tracking
+    const sessionId = SecurityUtils.generateRequestId();
+
+    // Execute scraping with WebSocket progress tracking
+    const result = await scrapingService.scrapeFestivalUrl(sanitizedUrl, sessionId);
 
     const processingTime = Date.now() - startTime;
     logger.info('Scraping request completed', {
       requestId,
+      sessionId,
       success: result.success,
       confidence: result.confidence,
       processingTime
@@ -83,7 +87,8 @@ export async function POST(request: NextRequest) {
       data: result.data,
       confidence: result.confidence,
       error: result.error,
-      metadata: result.metadata
+      metadata: result.metadata,
+      sessionId // Include session ID for client WebSocket connection
     });
 
   } catch (error) {

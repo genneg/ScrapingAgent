@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, memo, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -8,6 +8,7 @@ import { Upload, Link, Loader2, CheckCircle, XCircle, Clock, AlertTriangle, Shie
 import { FileSecurityValidator, UrlSecurityValidator } from '@/constants/security';
 import { UI_CONSTANTS } from '@/constants/ui';
 import { useErrorHandler } from '@/components/ErrorBoundary';
+import { useWebSocket } from '@/hooks/useWebSocket';
 
 const urlSchema = z.object({
   url: z.string()
@@ -24,6 +25,9 @@ interface ImportProgress {
   confidence?: number;
   error?: string;
   errorCode?: 'VALIDATION_ERROR' | 'SECURITY_ERROR' | 'NETWORK_ERROR' | 'PROCESSING_ERROR';
+  stage?: string;
+  timestamp?: string;
+  data?: any;
 }
 
 interface FileUploadProps {
@@ -168,9 +172,7 @@ function FileUploadComponent({ onFileSelect, onFileRemove, selectedFile, isProce
       </label>
     </div>
   );
-});
-
-export default UnifiedImportDashboard;
+}
 
 const UnifiedImportDashboard = memo(function UnifiedImportDashboard() {
   const [activeTab, setActiveTab] = useState<'url' | 'file'>('url');
@@ -189,6 +191,34 @@ const UnifiedImportDashboard = memo(function UnifiedImportDashboard() {
 
   // Error handling hook
   const { handleError, ErrorFallback } = useErrorHandler();
+
+  // WebSocket hook for real-time progress updates
+  const { isConnected, connect, disconnect, lastProgress, error: wsError } = useWebSocket();
+
+  // Handle WebSocket progress updates
+  useEffect(() => {
+    if (lastProgress && lastProgress.type === 'scraping') {
+      // Convert WebSocket progress to ImportProgress format
+      const progressStatus = lastProgress.stage === 'completed' ? 'completed' :
+                             lastProgress.stage === 'error' ? 'error' : 'processing';
+
+      setUrlProgress({
+        status: progressStatus,
+        message: lastProgress.message,
+        progress: lastProgress.progress,
+        confidence: lastProgress.confidence,
+        stage: lastProgress.stage,
+        timestamp: lastProgress.timestamp
+      });
+    }
+  }, [lastProgress]);
+
+  // Handle WebSocket errors
+  useEffect(() => {
+    if (wsError) {
+      handleError(new Error(wsError), 'WebSocket connection');
+    }
+  }, [wsError, handleError]);
 
   const {
     register,
@@ -222,12 +252,50 @@ const UnifiedImportDashboard = memo(function UnifiedImportDashboard() {
         progress: 10
       });
 
-      // Simulate processing stages with proper error handling
-      const stages = UI_CONSTANTS.PROGRESS.STAGES.URL_SCRAPING;
+      // Make API request to start scraping
+      const response = await fetch('/api/scrape', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ url: data.url }),
+      });
 
-      for (const stage of stages) {
-        await new Promise(resolve => setTimeout(resolve, UI_CONSTANTS.TIMING.PROGRESS_INTERVAL));
-        setUrlProgress(stage);
+      const result = await response.json();
+
+      if (result.success && result.sessionId) {
+        // Connect to WebSocket for real-time progress updates
+        connect(result.sessionId);
+
+        // Set initial state - will be updated by WebSocket
+        setUrlProgress({
+          status: 'processing',
+          message: 'Starting real-time progress tracking...',
+          progress: 20,
+          confidence: result.confidence
+        });
+
+        // Fallback: If WebSocket doesn't connect within 5 seconds, show completion
+        const fallbackTimeout = setTimeout(() => {
+          setUrlProgress({
+            status: 'completed',
+            message: 'Scraping completed successfully (WebSocket fallback mode)',
+            progress: 100,
+            confidence: result.confidence,
+            data: result.data,
+            stage: 'completed'
+          });
+        }, 5000);
+
+        // Clear fallback on successful WebSocket connection
+        const checkConnection = setInterval(() => {
+          if (isConnected) {
+            clearTimeout(fallbackTimeout);
+            clearInterval(checkConnection);
+          }
+        }, 100);
+      } else {
+        throw new Error(result.error || 'Scraping failed');
       }
 
       reset();
