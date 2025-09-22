@@ -500,7 +500,21 @@ const UnifiedImportDashboard = memo(function UnifiedImportDashboard() {
                 <div className="flex justify-between text-sm text-gray-600">
                   <span>{urlProgress.progress}% Complete</span>
                   {urlProgress.confidence && (
-                    <span>Confidence: {urlProgress.confidence}%</span>
+                    <div className="flex items-center space-x-2">
+                      <span>Confidence:</span>
+                      <div className="flex items-center space-x-1">
+                        <div className={`w-2 h-2 rounded-full ${
+                          urlProgress.confidence >= 0.9 ? 'bg-green-500' :
+                          urlProgress.confidence >= 0.7 ? 'bg-yellow-500' : 'bg-red-500'
+                        }`} />
+                        <span className={`font-medium ${
+                          urlProgress.confidence >= 0.9 ? 'text-green-600' :
+                          urlProgress.confidence >= 0.7 ? 'text-yellow-600' : 'text-red-600'
+                        }`}>
+                          {Math.round(urlProgress.confidence * 100)}%
+                        </span>
+                      </div>
+                    </div>
                   )}
                 </div>
               </div>
