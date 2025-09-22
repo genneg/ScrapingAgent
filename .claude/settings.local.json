@@ -37,7 +37,12 @@
       "Bash(git push:*)",
       "Bash(find:*)",
       "Bash(npx prisma generate:*)",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(taskkill:*)",
+      "Bash(net stop:*)",
+      "Bash(npm test)",
+      "Bash(npm test:*)",
+      "Bash(npx playwright install:*)"
     ],
     "deny": [],
     "ask": []

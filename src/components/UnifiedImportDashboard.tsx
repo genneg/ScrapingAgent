@@ -4,11 +4,13 @@ import { useState, useCallback, useMemo, memo, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Upload, Link, Loader2, CheckCircle, XCircle, Clock, AlertTriangle, Shield } from 'lucide-react';
+import { Upload, Link, Loader2, CheckCircle, XCircle, Clock, AlertTriangle, Shield, Eye, Save } from 'lucide-react';
 import { FileSecurityValidator, UrlSecurityValidator } from '@/constants/security';
 import { UI_CONSTANTS } from '@/constants/ui';
 import { useErrorHandler } from '@/components/ErrorBoundary';
 import { useWebSocket } from '@/hooks/useWebSocket';
+import { DataPreview } from '@/components/DataPreview';
+import { FestivalData } from '@/types';
 
 const urlSchema = z.object({
   url: z.string()
@@ -188,6 +190,9 @@ const UnifiedImportDashboard = memo(function UnifiedImportDashboard() {
     message: '',
     progress: 0
   });
+  const [previewData, setPreviewData] = useState<FestivalData | null>(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [currentConfidence, setCurrentConfidence] = useState<number | null>(null);
 
   // Error handling hook
   const { handleError, ErrorFallback } = useErrorHandler();
@@ -208,8 +213,15 @@ const UnifiedImportDashboard = memo(function UnifiedImportDashboard() {
         progress: lastProgress.progress,
         confidence: lastProgress.confidence,
         stage: lastProgress.stage,
-        timestamp: lastProgress.timestamp
+        timestamp: lastProgress.timestamp,
+        data: lastProgress.data
       });
+
+      // Set preview data when completed
+      if (lastProgress.stage === 'completed' && lastProgress.data) {
+        setPreviewData(lastProgress.data as FestivalData);
+        setCurrentConfidence(lastProgress.confidence || null);
+      }
     }
   }, [lastProgress]);
 
@@ -285,6 +297,12 @@ const UnifiedImportDashboard = memo(function UnifiedImportDashboard() {
             data: result.data,
             stage: 'completed'
           });
+
+          // Set preview data
+          if (result.data) {
+            setPreviewData(result.data as FestivalData);
+            setCurrentConfidence(result.confidence || null);
+          }
         }, 5000);
 
         // Clear fallback on successful WebSocket connection
@@ -345,6 +363,63 @@ const UnifiedImportDashboard = memo(function UnifiedImportDashboard() {
       message: '',
       progress: 0
     });
+  };
+
+  const handleEditData = (data: FestivalData) => {
+    setPreviewData(data);
+    setIsEditing(true);
+  };
+
+  const handleCancelEdit = () => {
+    setIsEditing(false);
+  };
+
+  const handleSaveData = async () => {
+    if (!previewData || !currentConfidence) return;
+
+    try {
+      // Show saving state
+      setUrlProgress(prev => ({
+        ...prev,
+        status: 'importing',
+        message: 'Saving data to database...',
+        progress: 95
+      }));
+
+      // Save to database
+      const response = await fetch('/api/save-data', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          data: previewData,
+          confidence: currentConfidence
+        }),
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        setUrlProgress({
+          status: 'completed',
+          message: 'Data saved successfully!',
+          progress: 100,
+          confidence: currentConfidence
+        });
+        setIsEditing(false);
+      } else {
+        throw new Error(result.error?.message || 'Failed to save data');
+      }
+    } catch (error) {
+      handleError(error, 'Data saving');
+      setUrlProgress({
+        status: 'error',
+        message: 'Failed to save data',
+        progress: 0,
+        error: error instanceof Error ? error.message : 'Unknown error occurred'
+      });
+    }
   };
 
   const handleFileSubmit = async () => {
@@ -567,6 +642,35 @@ const UnifiedImportDashboard = memo(function UnifiedImportDashboard() {
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {/* Data Preview Section */}
+        {previewData && (
+          <div className="border-t pt-6">
+            <div className="flex items-center space-x-2 mb-4">
+              <Eye className="w-5 h-5 text-blue-600" />
+              <h3 className="text-lg font-semibold text-gray-900">Data Preview & Editing</h3>
+              {currentConfidence && (
+                <div className="flex items-center space-x-1">
+                  <div className={`w-2 h-2 rounded-full ${
+                    currentConfidence >= 0.9 ? 'bg-green-500' :
+                    currentConfidence >= 0.7 ? 'bg-yellow-500' : 'bg-red-500'
+                  }`} />
+                  <span className="text-sm text-gray-600">
+                    Confidence: {Math.round(currentConfidence * 100)}%
+                  </span>
+                </div>
+              )}
+            </div>
+
+            <DataPreview
+              data={previewData}
+              onEdit={handleEditData}
+              onSave={handleSaveData}
+              onCancel={handleCancelEdit}
+              isEditing={isEditing}
+            />
           </div>
         )}
       </div>

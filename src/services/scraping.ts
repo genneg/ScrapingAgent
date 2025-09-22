@@ -3,6 +3,7 @@ import { logger } from '@/lib/logger';
 import { FestivalData } from '@/types';
 import { ValidationError, ExternalServiceError } from '@/lib/errors';
 import { websocketService, ScrapingProgress } from '@/lib/websocket';
+import { performanceService } from '@/services/performance';
 
 // Type definitions for raw festival data from AI
 interface RawFestivalData {
@@ -82,6 +83,9 @@ export class ScrapingService {
   }
 
   async scrapeFestivalUrl(url: string, sessionId?: string): Promise<ScrapingResult> {
+    const timer = performanceService.createTimer('scrape_festival_url');
+    timer.start();
+
     const startTime = Date.now();
     const metadata = {
       url,
@@ -203,6 +207,21 @@ export class ScrapingService {
         });
       }
 
+      const duration = timer.stop();
+      metadata.processingTime = duration;
+
+      // Record performance metrics for successful scraping
+      performanceService.recordMetric({
+        name: 'scraping_successful_duration',
+        value: duration,
+        unit: 'ms',
+        tags: {
+          url: new URL(url).hostname,
+          confidence: extractionResult.confidence > 0.8 ? 'high' : 'low',
+          pagesExplored: metadata.pagesExplored.toString()
+        }
+      });
+
       return {
         success: true,
         data: extractionResult.data,
@@ -211,8 +230,20 @@ export class ScrapingService {
       };
 
     } catch (error) {
+      const duration = timer.stop();
       metadata.processingTime = Date.now() - startTime;
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+      // Record performance metric for failed scraping
+      performanceService.recordMetric({
+        name: 'scraping_failed_duration',
+        value: duration,
+        unit: 'ms',
+        tags: {
+          url: new URL(url).hostname,
+          error: errorMessage.includes('timeout') ? 'timeout' : 'other'
+        }
+      });
 
       logger.error('Scraping failed', {
         url,
