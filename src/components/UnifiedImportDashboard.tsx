@@ -219,7 +219,7 @@ const UnifiedImportDashboard = memo(function UnifiedImportDashboard() {
 
       // Set preview data when completed
       if (lastProgress.stage === 'completed' && lastProgress.data) {
-        setPreviewData(lastProgress.data as FestivalData);
+        setPreviewData(lastProgress.data as unknown as FestivalData);
         setCurrentConfidence(lastProgress.confidence || null);
       }
     }

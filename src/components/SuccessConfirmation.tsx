@@ -20,7 +20,9 @@ import { FestivalData } from '@/types';
 import {
   formatDate,
   formatDuration,
-  calculateDataCompleteness
+  calculateDataCompleteness,
+  getConfidenceBg,
+  getConfidenceColor
 } from '@/utils/validation-helpers';
 
 interface SuccessConfirmationProps {

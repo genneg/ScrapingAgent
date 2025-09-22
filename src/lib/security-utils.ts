@@ -47,7 +47,10 @@ export class SecurityUtils {
           hostname === '::1' ||
           hostname.startsWith('192.168.') ||
           hostname.startsWith('10.') ||
-          hostname.startsWith('172.')) {
+          (hostname.startsWith('172.') && parseInt(hostname.split('.')[1]) >= 16 && parseInt(hostname.split('.')[1]) <= 31) ||
+          hostname.startsWith('169.254.') ||
+          hostname.startsWith('::ffff:') ||
+          hostname.includes('localhost')) {
         logger.warn('Private network access attempted', { hostname });
         return null;
       }

@@ -174,9 +174,9 @@ const ValidationResults: React.FC<ValidationResultsProps> = ({
                 <div
                   key={stableKey}
                   className={`p-3 rounded-lg border-l-4 ${
-                    issue.type === 'error' && 'severity' in issue && issue.severity === 'critical'
+                    'severity' in issue && issue.severity === 'critical'
                       ? 'border-red-500 bg-red-50'
-                      : issue.type === 'error'
+                      : 'severity' in issue && issue.severity === 'error'
                       ? 'border-orange-500 bg-orange-50'
                       : 'border-yellow-500 bg-yellow-50'
                   }`}
@@ -184,7 +184,7 @@ const ValidationResults: React.FC<ValidationResultsProps> = ({
                   <div className="flex items-start justify-between">
                     <div className="flex items-start space-x-3 flex-1">
                       {getSeverityIcon(
-                        issue.type === 'error' ? issue.severity : 'warning'
+                        'severity' in issue ? issue.severity : 'warning'
                       )}
                       <div className="flex-1">
                         <div className="font-medium text-gray-800 mb-1">
@@ -193,7 +193,7 @@ const ValidationResults: React.FC<ValidationResultsProps> = ({
                         <div className="text-sm text-gray-600 mb-2">
                           {issueInfo.action}
                         </div>
-                        {issue.type === 'error' && (
+                        {'severity' in issue && (
                           <div className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded inline-block">
                             Code: {issue.code}
                           </div>

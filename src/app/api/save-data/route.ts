@@ -53,7 +53,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Initialize database service
-    const dbService = new DatabaseService(prisma);
+    const dbService = new DatabaseService();
 
     // Import the data
     const result = await dbService.importFestivalData(data, {

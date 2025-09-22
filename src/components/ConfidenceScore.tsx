@@ -116,7 +116,7 @@ const ConfidenceScore: React.FC<ConfidenceScoreProps> = ({
       <div className="flex items-center space-x-3">
         {showIcon && (
           <div className={`p-2 rounded-lg ${currentColors.badge}`}>
-            {renderIcon(icon)}
+            {renderIcon(Icon)}
           </div>
         )}
 

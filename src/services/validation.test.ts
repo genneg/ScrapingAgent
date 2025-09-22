@@ -140,13 +140,13 @@ describe('ValidationService', () => {
       expect(result.confidence).toBeGreaterThan(0.9);
     });
 
-    it('should calculate lower confidence for incomplete data', () => {
+    it('should calculate lower confidence for incomplete data', async () => {
       const minimalData = {
         name: 'Test Festival',
         startDate: new Date('2024-06-01'),
         endDate: new Date('2024-06-03'),
       };
-      const result = validationService.validateFestivalData(minimalData as FestivalData);
+      const result = await validationService.validateFestivalData(minimalData as FestivalData);
       expect(result.confidence).toBeLessThan(0.8);
     });
 

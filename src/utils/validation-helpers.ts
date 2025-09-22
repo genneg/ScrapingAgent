@@ -1,3 +1,4 @@
+import React from 'react';
 import { ValidationResult, ValidationErrorDetail, ValidationWarning } from '@/services/validation';
 
 // Confidence scoring utilities
@@ -171,7 +172,7 @@ export const getErrorInformation = (code: string, message: string): {
 export interface ErrorSolution {
   action: string;
   description: string;
-  icon: string;
+  icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
   priority: 'high' | 'medium' | 'low';
   steps?: string[];
 }
@@ -244,7 +245,7 @@ export const getErrorSolutions = (code: string, message: string, details?: unkno
         action: 'Review URL/File Content',
         description: 'Ensure the URL or file content is safe and appropriate',
         icon: 'shield',
-        priority: 'critical',
+        priority: 'high' as const,
         steps: [
           'Verify the URL is from a trusted source',
           'Check for malicious content in files',

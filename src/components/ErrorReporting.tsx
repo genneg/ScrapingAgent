@@ -15,8 +15,22 @@ import {
   CheckCircle,
   Info
 } from 'lucide-react';
-import { getErrorInformation, getErrorSolutions, ErrorSolution } from '@/utils/validation-helpers';
+import type { ErrorSolution } from '@/utils/validation-helpers';
 import { sanitizeInput } from '@/utils/security-helpers';
+
+// Helper function to get color based on priority
+function getPriorityColor(priority: string): string {
+  switch (priority?.toLowerCase()) {
+    case 'high':
+      return 'border-red-500 bg-red-50';
+    case 'medium':
+      return 'border-yellow-500 bg-yellow-50';
+    case 'low':
+      return 'border-green-500 bg-green-50';
+    default:
+      return 'border-gray-500 bg-gray-50';
+  }
+}
 
 interface ErrorReportProps {
   error: {
@@ -110,7 +124,7 @@ const ErrorReporting: React.FC<ErrorReportProps> = ({
             className={`p-3 rounded-lg border-l-4 ${getPriorityColor(solution.priority)}`}
           >
             <div className="flex items-start space-x-2">
-              <solution.icon className="w-5 h-5 mt-0.5 text-gray-600 flex-shrink-0" />
+              {React.createElement(solution.icon, { className: "w-5 h-5 mt-0.5 text-gray-600 flex-shrink-0" })}
               <div className="flex-1 min-w-0">
                 <div className="font-medium text-gray-800 text-sm mb-1">
                   {solution.action}
@@ -381,7 +395,7 @@ function getErrorSolutions(code: string, message: string, details?: any): ErrorS
         action: 'Review URL/File Content',
         description: 'Ensure the URL or file content is safe and appropriate',
         icon: Shield,
-        priority: 'critical',
+        priority: 'high',
         steps: [
           'Verify the URL is from a trusted source',
           'Check for malicious content in files',

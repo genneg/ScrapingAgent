@@ -121,7 +121,7 @@ function convertToPrometheusFormat(data: any): string {
   // Performance metrics
   if (data.recent) {
     // Group metrics by name
-    const metricGroups = data.recent.reduce((acc: any, metric: any) => {
+    const metricGroups = data.recent.reduce((acc: Record<string, Array<{name: string, value: number, tags?: Record<string, string>}>>, metric: {name: string, value: number, tags?: Record<string, string>}) => {
       if (!acc[metric.name]) {
         acc[metric.name] = [];
       }
@@ -130,8 +130,9 @@ function convertToPrometheusFormat(data: any): string {
     }, {});
 
     // Create metrics for each group
-    Object.entries(metricGroups).forEach(([name, metrics]: [string, any[]]) => {
-      const latest = metrics[metrics.length - 1];
+    Object.entries(metricGroups).forEach(([name, metrics]) => {
+      const metricsArray = metrics as Array<{name: string, value: number, tags?: Record<string, string>}>;
+      const latest = metricsArray[metricsArray.length - 1];
       prometheusText += `# HELP scraping_${name} ${name} metric\n`;
       prometheusText += `# TYPE scraping_${name} gauge\n`;
       prometheusText += `scraping_${name} ${latest.value} ${timestamp}\n`;
