@@ -35,14 +35,13 @@ export function withApiHandler<T = unknown>(
       // Apply rate limiting if configured
       if (options.rateLimit) {
         const rateLimitResult = await rateLimiterService.checkRateLimit(
-          getClientId(request),
-          options.rateLimit
+          request,
+          options.rateLimit.endpoint
         );
 
         if (!rateLimitResult.allowed) {
           logger.warn('Rate limit exceeded', {
             requestId,
-            clientId: getClientId(request),
             endpoint: options.rateLimit.endpoint,
           });
 

@@ -6,12 +6,12 @@ export async function testDatabaseConnection() {
     await prisma.$queryRaw`SELECT NOW()`;
 
     // Test if we can query the database
-    const festivalCount = await prisma.festival.count();
+    const eventCount = await prisma.event.count();
 
     return {
       success: true,
       message: 'Database connection successful',
-      festivalCount,
+      eventCount,
     };
   } catch (error) {
     console.error('Database connection error:', error);

@@ -31,19 +31,7 @@ export class RateLimiterService {
     return this.checkRateLimitInternal(clientId, config);
   }
 
-  /**
-   * Get client ID from request (IP-based with fallback)
-   */
-  private getClientId(request: NextRequest): string {
-    // Try to get real IP from various headers
-    const forwardedFor = request.headers.get('x-forwarded-for');
-    const realIp = request.headers.get('x-real-ip');
-    const cfConnectingIp = request.headers.get('cf-connecting-ip');
-
-    const ip = forwardedFor?.split(',')[0] || realIp || cfConnectingIp || 'unknown';
-    return `ip_${ip}`;
-  }
-
+  
   /**
    * Get rate limit configuration for endpoint
    */
@@ -243,7 +231,7 @@ export class RateLimiterService {
   createMiddleware(config: RateLimitConfig) {
     return async (request: NextRequest): Promise<NextResponse | null> => {
       const clientId = this.getClientId(request);
-      const result = await this.checkRateLimit(clientId, config);
+      const result = await this.checkRateLimitInternal(clientId, config);
 
       if (!result.allowed) {
         return NextResponse.json(

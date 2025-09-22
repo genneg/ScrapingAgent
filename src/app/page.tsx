@@ -1,3 +1,7 @@
+import UnifiedImportDashboard from '@/components/UnifiedImportDashboard';
+import OperationHistory from '@/components/OperationHistory';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
+
 export default function Home() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
@@ -106,49 +110,15 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Quick Actions */}
-        <div className="bg-white rounded-lg shadow-md p-8">
-          <h3 className="text-2xl font-bold text-gray-900 mb-6">
-            Quick Actions
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <button className="flex items-center justify-center px-6 py-4 border-2 border-dashed border-gray-300 rounded-lg hover:border-gray-400 hover:bg-gray-50 transition-colors">
-              <svg
-                className="w-6 h-6 text-gray-400 mr-3"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"
-                />
-              </svg>
-              <span className="text-gray-700 font-medium">Scrape from URL</span>
-            </button>
+        {/* Unified Import Dashboard */}
+        <ErrorBoundary>
+          <UnifiedImportDashboard />
+        </ErrorBoundary>
 
-            <button className="flex items-center justify-center px-6 py-4 border-2 border-dashed border-gray-300 rounded-lg hover:border-gray-400 hover:bg-gray-50 transition-colors">
-              <svg
-                className="w-6 h-6 text-gray-400 mr-3"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
-                />
-              </svg>
-              <span className="text-gray-700 font-medium">
-                Upload JSON File
-              </span>
-            </button>
-          </div>
-        </div>
+        {/* Operation History */}
+        <ErrorBoundary>
+          <OperationHistory />
+        </ErrorBoundary>
 
         {/* System Status */}
         <div className="mt-8 bg-gray-50 rounded-lg p-6">

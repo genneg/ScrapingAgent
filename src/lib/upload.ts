@@ -84,13 +84,13 @@ export class UploadService {
       const validationResult = festivalSchema.safeParse(jsonData);
 
       if (!validationResult.success) {
-        logger.warn('Schema validation failed', { errors: validationResult.error.errors });
+        logger.warn('Schema validation failed', { errors: validationResult.error.issues });
         return {
           success: false,
           error: {
             code: 'VALIDATION_ERROR',
             message: 'Data validation failed',
-            details: validationResult.error.errors,
+            details: validationResult.error.issues,
           },
         };
       }
@@ -140,7 +140,7 @@ export class UploadService {
           error: {
             code: 'VALIDATION_ERROR',
             message: 'Data validation failed',
-            details: validationResult.error.errors,
+            details: validationResult.error.issues,
           },
         };
       }

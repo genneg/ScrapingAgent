@@ -11,8 +11,10 @@ const port = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 const app = next({ dev });
 const handle = app.getRequestHandler();
 
+let server: any;
+
 app.prepare().then(() => {
-  const server = createServer(async (req, res) => {
+  server = createServer(async (req, res) => {
     try {
       const parsedUrl = parse(req.url!, true);
       await handle(req, res, parsedUrl);

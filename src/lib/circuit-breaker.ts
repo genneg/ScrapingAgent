@@ -26,11 +26,10 @@ export class CircuitBreaker {
 
   constructor(private config: CircuitBreakerConfig) {
     this.config = {
-      failureThreshold: 5,
+      ...config,
       resetTimeout: 60000, // 1 minute
       monitoringPeriod: 300000, // 5 minutes
       requestTimeout: 30000, // 30 seconds
-      ...config,
     };
   }
 
