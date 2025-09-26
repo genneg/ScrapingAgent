@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useMemo, memo, useEffect } from 'react';
+import { useState, useCallback, useMemo, memo, useEffect, useRef } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -193,44 +193,125 @@ const UnifiedImportDashboard = memo(function UnifiedImportDashboard() {
   const [previewData, setPreviewData] = useState<FestivalData | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [currentConfidence, setCurrentConfidence] = useState<number | null>(null);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [hasReceivedProgress, setHasReceivedProgress] = useState(false);
+  const fallbackTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const fallbackCleanupRef = useRef<NodeJS.Timeout | null>(null);
 
   // Error handling hook
   const { handleError, ErrorFallback } = useErrorHandler();
 
   // WebSocket hook for real-time progress updates
-  const { isConnected, connect, disconnect, lastProgress, error: wsError } = useWebSocket();
+  const { connect, disconnect, lastProgress, error: wsError } = useWebSocket();
+
+  const clearFallbackTimeout = useCallback(() => {
+    if (fallbackTimeoutRef.current) {
+      clearTimeout(fallbackTimeoutRef.current);
+      fallbackTimeoutRef.current = null;
+    }
+  }, []);
+
+  const clearCleanupTimeout = useCallback(() => {
+    if (fallbackCleanupRef.current) {
+      clearTimeout(fallbackCleanupRef.current);
+      fallbackCleanupRef.current = null;
+    }
+  }, []);
 
   // Handle WebSocket progress updates
   useEffect(() => {
-    if (lastProgress && lastProgress.type === 'scraping') {
+    if (!lastProgress || lastProgress.type !== 'scraping') {
+      return;
+    }
+
+    if (activeSessionId && lastProgress.sessionId && lastProgress.sessionId !== activeSessionId) {
+      return;
+    }
+
+    setHasReceivedProgress(true);
+
+    if (lastProgress.stage === 'fetching') {
+      setPreviewData(null);
+      setCurrentConfidence(null);
+      setIsEditing(false);
+    }
+
       // Convert WebSocket progress to ImportProgress format
       const progressStatus = lastProgress.stage === 'completed' ? 'completed' :
                              lastProgress.stage === 'error' ? 'error' : 'processing';
 
-      setUrlProgress({
-        status: progressStatus,
-        message: lastProgress.message,
-        progress: lastProgress.progress,
-        confidence: lastProgress.confidence,
-        stage: lastProgress.stage,
-        timestamp: lastProgress.timestamp,
-        data: lastProgress.data
-      });
+    setUrlProgress({
+      status: progressStatus,
+      message: lastProgress.message,
+      progress: lastProgress.progress,
+      confidence: lastProgress.confidence,
+      stage: lastProgress.stage,
+      timestamp: lastProgress.timestamp,
+      data: lastProgress.data
+    });
 
-      // Set preview data when completed
-      if (lastProgress.stage === 'completed' && lastProgress.data) {
-        setPreviewData(lastProgress.data as unknown as FestivalData);
-        setCurrentConfidence(lastProgress.confidence || null);
+    if (lastProgress.stage === 'completed' && lastProgress.data) {
+      try {
+        const festivalData = lastProgress.data as unknown as FestivalData;
+        if (festivalData && typeof festivalData === 'object' && festivalData.name) {
+          if (!festivalData.venues) {
+            festivalData.venues = festivalData.venue ? [festivalData.venue] : undefined;
+          }
+          setPreviewData(festivalData);
+          setCurrentConfidence(lastProgress.confidence || null);
+
+          clearCleanupTimeout();
+          fallbackCleanupRef.current = setTimeout(() => {
+            fallbackCleanupRef.current = null;
+            setUrlProgress({
+              status: 'idle',
+              message: '',
+              progress: 0
+            });
+          }, 2000);
+        } else {
+          console.warn('Received invalid festival data structure', { data: festivalData });
+        }
+      } catch (error) {
+        console.error('Error processing festival data from WebSocket', {
+          error: error instanceof Error ? error.message : 'Unknown error',
+          data: lastProgress.data
+        });
       }
     }
-  }, [lastProgress]);
+  }, [lastProgress, activeSessionId, clearCleanupTimeout]);
+
+  useEffect(() => {
+    if (hasReceivedProgress) {
+      clearFallbackTimeout();
+    }
+  }, [hasReceivedProgress, clearFallbackTimeout]);
 
   // Handle WebSocket errors
   useEffect(() => {
     if (wsError) {
       handleError(new Error(wsError), 'WebSocket connection');
+
+      // Reset form state after WebSocket error
+      setUrlProgress({
+        status: 'error',
+        message: `WebSocket connection error: ${wsError}`,
+        progress: 0,
+        error: wsError,
+        errorCode: 'NETWORK_ERROR'
+      });
+
+      // Auto-reset after 3 seconds
+      setTimeout(resetUrlForm, 3000);
     }
   }, [wsError, handleError]);
+
+  useEffect(() => {
+    return () => {
+      clearFallbackTimeout();
+      clearCleanupTimeout();
+    };
+  }, [clearFallbackTimeout, clearCleanupTimeout]);
 
   const {
     register,
@@ -241,8 +322,37 @@ const UnifiedImportDashboard = memo(function UnifiedImportDashboard() {
     resolver: zodResolver(urlSchema)
   });
 
+  const resetUrlForm = () => {
+    clearFallbackTimeout();
+    clearCleanupTimeout();
+    setUrlProgress({
+      status: 'idle',
+      message: '',
+      progress: 0
+    });
+    reset();
+  };
+
   const handleUrlSubmit = async (data: UrlFormData) => {
     try {
+      // Clear any existing data when starting new scraping
+      setPreviewData(null);
+      setCurrentConfidence(null);
+      setIsEditing(false);
+      setHasReceivedProgress(false);
+      clearFallbackTimeout();
+      clearCleanupTimeout();
+
+      // Reset progress state completely
+      setUrlProgress({
+        status: 'idle',
+        message: '',
+        progress: 0
+      });
+
+      // Disconnect any existing WebSocket connection to prevent session conflicts
+      disconnect();
+
       // Security validation first
       const urlValidation = UrlSecurityValidator.validateUrl(data.url);
       if (!urlValidation.valid) {
@@ -255,6 +365,9 @@ const UnifiedImportDashboard = memo(function UnifiedImportDashboard() {
           error: error.message,
           errorCode: 'SECURITY_ERROR'
         });
+
+        // Reset error state after 3 seconds
+        setTimeout(resetUrlForm, 3000);
         return;
       }
 
@@ -277,6 +390,7 @@ const UnifiedImportDashboard = memo(function UnifiedImportDashboard() {
 
       if (result.success && result.sessionId) {
         // Connect to WebSocket for real-time progress updates
+        setActiveSessionId(result.sessionId);
         connect(result.sessionId);
 
         // Set initial state - will be updated by WebSocket
@@ -288,7 +402,8 @@ const UnifiedImportDashboard = memo(function UnifiedImportDashboard() {
         });
 
         // Fallback: If WebSocket doesn't connect within 5 seconds, show completion
-        const fallbackTimeout = setTimeout(() => {
+        fallbackTimeoutRef.current = setTimeout(() => {
+          fallbackTimeoutRef.current = null;
           setUrlProgress({
             status: 'completed',
             message: 'Scraping completed successfully (WebSocket fallback mode)',
@@ -298,34 +413,64 @@ const UnifiedImportDashboard = memo(function UnifiedImportDashboard() {
             stage: 'completed'
           });
 
-          // Set preview data
-          if (result.data) {
-            setPreviewData(result.data as FestivalData);
-            setCurrentConfidence(result.confidence || null);
+          // Set preview data with validation
+          if (result.data && typeof result.data === 'object' && result.data.name) {
+            try {
+              const festivalData = result.data as FestivalData;
+              // Ensure venues is properly initialized if undefined
+              if (!festivalData.venues) {
+                festivalData.venues = festivalData.venue ? [festivalData.venue] : undefined;
+              }
+              setPreviewData(festivalData);
+              setCurrentConfidence(result.confidence || null);
+              setHasReceivedProgress(true);
+            } catch (error) {
+              console.error('Error processing festival data from fallback', error);
+              setUrlProgress({
+                status: 'error',
+                message: 'Error processing scraped data',
+                progress: 0,
+                error: 'Data processing error'
+              });
+            }
+          } else {
+            console.warn('Invalid or missing festival data in fallback result', { data: result.data });
           }
-        }, 5000);
 
-        // Clear fallback on successful WebSocket connection
-        const checkConnection = setInterval(() => {
-          if (isConnected) {
-            clearTimeout(fallbackTimeout);
-            clearInterval(checkConnection);
-          }
-        }, 100);
+          // Reset progress state to idle after a delay to allow form reuse
+          fallbackCleanupRef.current = setTimeout(() => {
+            fallbackCleanupRef.current = null;
+            setUrlProgress({
+              status: 'idle',
+              message: '',
+              progress: 0
+            });
+          }, 2000); // 2 second delay before allowing new submission
+        }, 5000);
       } else {
-        throw new Error(result.error || 'Scraping failed');
+        // Provide more detailed error information
+        const errorMessage = result.error || 'Scraping failed';
+        const errorDetails = result.details ? ` (${result.details})` : '';
+        throw new Error(`${errorMessage}${errorDetails}`);
       }
 
       reset();
     } catch (error) {
+      console.error('URL processing error:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      const errorDetails = error instanceof Error && error.cause ? ` (${error.cause})` : '';
+
       handleError(error, 'URL processing');
       setUrlProgress({
         status: 'error',
-        message: 'Failed to process URL',
+        message: `Failed to process URL: ${errorMessage}${errorDetails}`,
         progress: 0,
-        error: error instanceof Error ? error.message : 'Unknown error occurred',
+        error: errorMessage,
         errorCode: 'PROCESSING_ERROR'
       });
+
+      // Reset error state after 5 seconds
+      setTimeout(resetUrlForm, 5000);
     }
   };
 
@@ -482,10 +627,10 @@ const UnifiedImportDashboard = memo(function UnifiedImportDashboard() {
     <div className="max-w-4xl mx-auto p-6 space-y-6">
       {/* Header */}
       <div className="text-center">
-        <h2 className="text-3xl font-bold text-gray-900 mb-2">
+        <h2 className="text-3xl font-bold text-gray-900 mb-2 text-primary-high-contrast">
           Import Festival Data
         </h2>
-        <p className="text-gray-600">
+        <p className="text-gray-600 text-secondary-high-contrast">
           Choose to scrape from a website or upload a JSON file
         </p>
       </div>
@@ -521,19 +666,19 @@ const UnifiedImportDashboard = memo(function UnifiedImportDashboard() {
       </div>
 
       {/* Content Area */}
-      <div className="bg-white rounded-lg shadow-md p-6">
+      <div className="bg-white rounded-lg shadow-md p-6 card-high-contrast">
         {activeTab === 'url' ? (
           <div className="space-y-6">
             <form onSubmit={handleSubmit(handleUrlSubmit)} className="space-y-4">
               <div>
-                <label htmlFor="url" className="block text-sm font-medium text-gray-700 mb-2">
+                <label htmlFor="url" className="block text-sm font-medium text-gray-700 mb-2 label-high-contrast">
                   Festival Website URL
                 </label>
                 <input
                   {...register('url')}
                   type="url"
                   placeholder="https://example-festival.com"
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 input-high-contrast"
                   disabled={isSubmitting || urlProgress.status !== 'idle'}
                 />
                 {errors.url && (
@@ -541,20 +686,32 @@ const UnifiedImportDashboard = memo(function UnifiedImportDashboard() {
                 )}
               </div>
 
-              <button
-                type="submit"
-                disabled={isSubmitting || urlProgress.status !== 'idle'}
-                className="w-full py-3 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
-              >
-                {isSubmitting ? (
-                  <div className="flex items-center justify-center space-x-2">
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                    <span>Processing...</span>
-                  </div>
-                ) : (
-                  'Start Scraping'
+              <div className="flex space-x-3">
+                <button
+                  type="submit"
+                  disabled={isSubmitting || urlProgress.status !== 'idle'}
+                  className="flex-1 py-3 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors btn-high-contrast"
+                >
+                  {isSubmitting ? (
+                    <div className="flex items-center justify-center space-x-2">
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      <span>Processing...</span>
+                    </div>
+                  ) : (
+                    'Start Scraping'
+                  )}
+                </button>
+
+                {urlProgress.status !== 'idle' && (
+                  <button
+                    type="button"
+                    onClick={resetUrlForm}
+                    className="px-4 py-3 bg-gray-500 text-white font-medium rounded-lg hover:bg-gray-600 transition-colors"
+                  >
+                    Reset
+                  </button>
                 )}
-              </button>
+              </div>
             </form>
 
             {/* Progress Display */}

@@ -28,10 +28,7 @@ export class UploadService {
         logger.warn('No file provided in upload request');
         return {
           success: false,
-          error: {
-            code: 'NO_FILE',
-            message: 'No file provided',
-          },
+          error: new Error('No file provided'),
         };
       }
 
@@ -40,10 +37,7 @@ export class UploadService {
         logger.warn(`Invalid file type: ${file.name}`);
         return {
           success: false,
-          error: {
-            code: 'INVALID_FILE_TYPE',
-            message: 'Only JSON files are accepted',
-          },
+          error: new Error('Only JSON files are accepted'),
         };
       }
 
@@ -53,10 +47,7 @@ export class UploadService {
         logger.warn(`File too large: ${file.size} bytes`);
         return {
           success: false,
-          error: {
-            code: 'FILE_TOO_LARGE',
-            message: 'File size must be less than 5MB',
-          },
+          error: new Error('File size must be less than 5MB'),
         };
       }
 
@@ -72,11 +63,7 @@ export class UploadService {
         logger.error('Failed to parse JSON', { error: parseError });
         return {
           success: false,
-          error: {
-            code: 'INVALID_JSON',
-            message: 'Invalid JSON format',
-            details: parseError instanceof Error ? parseError.message : 'Parse error',
-          },
+          error: new Error(`Invalid JSON format: ${parseError instanceof Error ? parseError.message : 'Parse error'}`),
         };
       }
 
@@ -87,11 +74,7 @@ export class UploadService {
         logger.warn('Schema validation failed', { errors: validationResult.error.issues });
         return {
           success: false,
-          error: {
-            code: 'VALIDATION_ERROR',
-            message: 'Data validation failed',
-            details: validationResult.error.issues,
-          },
+          error: new Error(`Data validation failed: ${JSON.stringify(validationResult.error.issues)}`),
         };
       }
 
@@ -118,11 +101,7 @@ export class UploadService {
       logger.error('Unexpected error during upload', { error });
       return {
         success: false,
-        error: {
-          code: 'UPLOAD_ERROR',
-          message: 'Failed to process file upload',
-          details: error instanceof Error ? error.message : 'Unknown error',
-        },
+        error: new Error(`Failed to process file upload: ${error instanceof Error ? error.message : 'Unknown error'}`),
       };
     }
   }
@@ -137,11 +116,7 @@ export class UploadService {
       if (!validationResult.success) {
         return {
           success: false,
-          error: {
-            code: 'VALIDATION_ERROR',
-            message: 'Data validation failed',
-            details: validationResult.error.issues,
-          },
+          error: new Error(`Data validation failed: ${JSON.stringify(validationResult.error.issues)}`),
         };
       }
 
@@ -174,11 +149,7 @@ export class UploadService {
       logger.error('Error previewing data', { error });
       return {
         success: false,
-        error: {
-          code: 'PREVIEW_ERROR',
-          message: 'Failed to preview data',
-          details: error instanceof Error ? error.message : 'Unknown error',
-        },
+        error: new Error(`Failed to preview data: ${error instanceof Error ? error.message : 'Unknown error'}`),
       };
     }
   }

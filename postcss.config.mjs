@@ -1,6 +1,8 @@
-// PostCSS disabled temporarily to resolve Tailwind compatibility issues
 const config = {
-  plugins: [],
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
 };
 
 export default config;

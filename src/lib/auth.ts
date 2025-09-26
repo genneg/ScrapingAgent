@@ -1,11 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createLogger } from './logger';
+import { logger } from './logger';
 import jwt from 'jsonwebtoken';
-import { rateLimiterService } from '@/services/rate-limiter';
+import { rateLimiterService } from '@/services/rate-limiter-simple';
 import { configService } from '@/lib/config';
 import { AuthenticationError, AuthorizationError, ErrorUtils, BaseError } from '@/lib/errors';
-
-const logger = createLogger('auth');
 
 export interface AuthUser {
   id: string;
@@ -103,7 +101,10 @@ export async function authenticateRequest(
 async function validateToken(token: string): Promise<AuthUser | null> {
   try {
     // Verify the JWT token
-    const jwtSecret = configService.getConfig().auth.jwtSecret;
+    const jwtSecret = configService.get('nextAuthSecret');
+    if (!jwtSecret) {
+      throw new Error('JWT secret is not configured');
+    }
     const decoded = jwt.verify(token, jwtSecret) as any;
 
     // Validate the token structure
@@ -185,7 +186,7 @@ export function createRateLimiter(requests: number, windowMs: number, endpoint: 
  * Generate JWT token for authenticated user
  */
 export function generateJWT(user: AuthUser): string {
-  const jwtSecret = configService.getConfig().auth.jwtSecret;
+  const jwtSecret = configService.get('nextAuthSecret');
 
   const payload = {
     id: user.id,
@@ -196,6 +197,9 @@ export function generateJWT(user: AuthUser): string {
     exp: Math.floor(Date.now() / 1000) + (24 * 60 * 60), // 24 hours expiration
   };
 
+  if (!jwtSecret) {
+    throw new Error('JWT secret is not configured');
+  }
   return jwt.sign(payload, jwtSecret);
 }
 

@@ -1,8 +1,6 @@
 import { Server as NetServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
-import { createLogger } from './logger';
-
-const logger = createLogger('websocket');
+import { logger } from './logger';
 
 export interface WebSocketProgress {
   type: 'scraping' | 'validation' | 'import' | 'error';
@@ -11,6 +9,7 @@ export interface WebSocketProgress {
   message: string;
   data?: Record<string, unknown>;
   timestamp: string;
+  sessionId?: string; // Added for session identification
 }
 
 export interface ScrapingProgress extends WebSocketProgress {
@@ -41,6 +40,8 @@ export interface ImportProgress extends WebSocketProgress {
 export class WebSocketService {
   private io: SocketIOServer | null = null;
   private activeRooms = new Map<string, Set<string>>();
+  private messageQueue: Array<{ sessionId: string; progress: WebSocketProgress }> = [];
+  private isInitialized = false;
 
   /**
    * Initialize WebSocket server with HTTP server
@@ -107,15 +108,20 @@ export class WebSocketService {
       });
     });
 
+    this.isInitialized = true;
     logger.info('WebSocket server initialized');
+
+    // Process any queued messages
+    this.processMessageQueue();
   }
 
   /**
    * Send progress update to a specific session
    */
   sendProgress(sessionId: string, progress: WebSocketProgress) {
-    if (!this.io) {
-      logger.warn('WebSocket server not initialized');
+    if (!this.isInitialized || !this.io) {
+      logger.warn('WebSocket server not initialized, queuing message', { sessionId });
+      this.messageQueue.push({ sessionId, progress });
       return;
     }
 
@@ -126,6 +132,35 @@ export class WebSocketService {
     });
 
     logger.debug('Progress update sent', { sessionId, progress });
+  }
+
+  /**
+   * Process queued messages after initialization
+   */
+  private processMessageQueue() {
+    if (!this.isInitialized || !this.io) {
+      return;
+    }
+
+    const messagesToProcess = [...this.messageQueue];
+    this.messageQueue = [];
+
+    messagesToProcess.forEach(({ sessionId, progress }) => {
+      try {
+        const room = sessionId;
+        this.io!.to(room).emit('progress-update', {
+          ...progress,
+          sessionId,
+        });
+        logger.debug('Queued progress update sent', { sessionId, progress });
+      } catch (error) {
+        logger.error('Failed to send queued message', { sessionId, error });
+      }
+    });
+
+    if (messagesToProcess.length > 0) {
+      logger.info(`Processed ${messagesToProcess.length} queued WebSocket messages`);
+    }
   }
 
   /**
@@ -158,8 +193,18 @@ export class WebSocketService {
     details?: any;
     operation?: string;
   }) {
-    if (!this.io) {
-      logger.warn('WebSocket server not initialized');
+    if (!this.isInitialized || !this.io) {
+      logger.warn('WebSocket server not initialized, queuing error message', { sessionId });
+      this.messageQueue.push({
+        sessionId,
+        progress: {
+          type: 'error',
+          stage: 'error',
+          progress: 0,
+          message: error.message,
+          timestamp: new Date().toISOString(),
+        }
+      });
       return;
     }
 
@@ -198,8 +243,8 @@ export class WebSocketService {
    * Broadcast to all connected clients
    */
   broadcast(event: string, data: any) {
-    if (!this.io) {
-      logger.warn('WebSocket server not initialized');
+    if (!this.isInitialized || !this.io) {
+      logger.warn('WebSocket server not initialized, cannot broadcast');
       return;
     }
 
@@ -224,6 +269,13 @@ export class WebSocketService {
     return room ? room.size > 0 : false;
   }
 
+  /**
+   * Check if WebSocket service is initialized
+   */
+  isReady(): boolean {
+    return this.isInitialized && this.io !== null;
+  }
+
   private addToRoom(room: string, socketId: string) {
     if (!this.activeRooms.has(room)) {
       this.activeRooms.set(room, new Set());
@@ -242,5 +294,18 @@ export class WebSocketService {
   }
 }
 
-// Export singleton instance
-export const websocketService = new WebSocketService();
+// Global singleton instance - stored on global object to survive Next.js module reloading
+const GLOBAL_WEBSOCKET_SERVICE_KEY = 'swingradar_websocket_service';
+
+function getGlobalWebSocketService(): WebSocketService {
+  // @ts-ignore - accessing global object
+  if (!global[GLOBAL_WEBSOCKET_SERVICE_KEY]) {
+    // @ts-ignore
+    global[GLOBAL_WEBSOCKET_SERVICE_KEY] = new WebSocketService();
+  }
+  // @ts-ignore
+  return global[GLOBAL_WEBSOCKET_SERVICE_KEY];
+}
+
+// Export singleton instance that survives Next.js module reloading
+export const websocketService = getGlobalWebSocketService();

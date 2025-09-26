@@ -260,15 +260,16 @@ export class PerformanceService {
       try {
         const resourceObserver = new PerformanceObserver((list) => {
           for (const entry of list.getEntries()) {
-            if (entry.initiatorType === 'script' || entry.initiatorType === 'link') {
+            const resourceEntry = entry as PerformanceResourceTiming;
+            if (resourceEntry.initiatorType === 'script' || resourceEntry.initiatorType === 'link') {
               this.recordMetric({
                 name: 'resource_load_time',
-                value: entry.duration,
+                value: resourceEntry.duration,
                 unit: 'ms',
                 tags: {
                   type: 'resource',
-                  initiator: entry.initiatorType,
-                  name: (entry as PerformanceResourceTiming).name
+                  initiator: resourceEntry.initiatorType,
+                  name: resourceEntry.name
                 }
               });
             }

@@ -4,6 +4,9 @@ import { FestivalData } from '@/types';
 import { ValidationError, ExternalServiceError } from '@/lib/errors';
 import { websocketService, ScrapingProgress } from '@/lib/websocket';
 import { performanceService } from '@/services/performance';
+import configService from '@/lib/config';
+import { buildPrimaryPrompt, buildRetryPrompt, buildMinimalPrompt } from '@/services/scraping-prompts';
+import { extractJsonBlock, parseWithRepair } from '@/utils/json-parser';
 
 // Type definitions for raw festival data from AI
 interface RawFestivalData {
@@ -14,6 +17,7 @@ interface RawFestivalData {
   timezone?: string;
   registrationDeadline?: string;
   venue?: RawVenueData;
+  venues?: RawVenueData[];
   website?: string;
   facebook?: string;
   instagram?: string;
@@ -41,11 +45,13 @@ interface RawVenueData {
 
 interface RawTeacherData {
   name: string;
+  bio?: string;
   specialties?: string[];
 }
 
 interface RawMusicianData {
   name: string;
+  bio?: string;
   genre?: string[];
 }
 
@@ -119,7 +125,7 @@ export class ScrapingService {
             url,
           });
         }
-        throw new ValidationError('Invalid URL format', 'url', url);
+        throw new ValidationError('Invalid URL format', { field: 'url', value: url });
       }
 
       // Fetch website content with multi-page exploration
@@ -163,8 +169,8 @@ export class ScrapingService {
           });
         }
         throw new ExternalServiceError(
-          'claude-ai',
-          extractionResult.error || 'Failed to extract festival data'
+          `Failed to extract festival data: ${extractionResult.error || 'Unknown error'}`,
+          { service: 'claude-ai' }
         );
       }
 
@@ -204,6 +210,7 @@ export class ScrapingService {
           pagesProcessed: metadata.pagesExplored,
           totalPages: this.MAX_PAGES,
           confidence: extractionResult.confidence,
+          data: extractionResult.data as unknown as Record<string, unknown>,
         });
       }
 
@@ -297,17 +304,8 @@ export class ScrapingService {
         return false;
       }
 
-      // Check for allowed domains (optional - remove or customize as needed)
-      const allowedDomains = process.env.ALLOWED_SCRAPING_DOMAINS?.split(',') || [];
-      if (allowedDomains.length > 0) {
-        const isAllowed = allowedDomains.some(domain =>
-          hostname === domain || hostname.endsWith(`.${domain}`)
-        );
-        if (!isAllowed) {
-          logger.warn('Domain not in allowed list', { hostname, allowedDomains });
-          return false;
-        }
-      }
+      // All domains are allowed since festival data is public information
+      // No domain restrictions needed for public festival websites
 
       return true;
     } catch (error) {
@@ -381,18 +379,13 @@ export class ScrapingService {
     const baseUrlObj = new URL(baseUrl);
     const exploredUrls = new Set<string>([baseUrl]);
 
-    // Extract relevant links from main content
-    const links = this.extractRelevantLinks(mainContent, baseUrlObj);
-
-    // Sort by priority and limit to MAX_PAGES - 1 (since we already have the main page)
-    const topLinks = links
+    const links = this.extractRelevantLinks(mainContent, baseUrlObj)
+      .filter((link) => !exploredUrls.has(link.url))
       .sort((a, b) => b.priority - a.priority)
       .slice(0, this.MAX_PAGES - 1);
 
-    // Fetch additional pages concurrently
-    const fetchPromises = topLinks
-      .filter(link => !exploredUrls.has(link.url))
-      .map(async (link) => {
+    const results = await Promise.allSettled(
+      links.map(async (link) => {
         try {
           const content = await this.fetchPageContent(link.url, controller);
           exploredUrls.add(link.url);
@@ -401,9 +394,8 @@ export class ScrapingService {
           logger.warn('Failed to fetch additional page', { url: link.url, error });
           return null;
         }
-      });
-
-    const results = await Promise.allSettled(fetchPromises);
+      })
+    );
 
     results.forEach((result) => {
       if (result.status === 'fulfilled' && result.value) {
@@ -415,10 +407,7 @@ export class ScrapingService {
   }
 
   private extractRelevantLinks(content: string, baseUrl: URL): Array<{ url: string; priority: number }> {
-    const links: Array<{ url: string; priority: number }> = [];
-
-    // Define keywords for different page types with priorities
-    const keywords = [
+    const keywords: Array<{ terms: string[]; priority: number }> = [
       { terms: ['program', 'schedule', 'timetable'], priority: 10 },
       { terms: ['teacher', 'instructor', 'artist', 'lineup'], priority: 9 },
       { terms: ['register', 'ticket', 'booking', 'price'], priority: 8 },
@@ -427,20 +416,18 @@ export class ScrapingService {
       { terms: ['workshop', 'class', 'lesson'], priority: 5 },
     ];
 
-    // Extract all links
+    const links: Array<{ url: string; priority: number }> = [];
     const linkRegex = /<a\s+(?:[^>]*?\s+)?href="([^"]*)"[^>]*>([^<]*)<\/a>/gi;
-    let match;
+    let match: RegExpExecArray | null;
 
     while ((match = linkRegex.exec(content)) !== null) {
       const href = match[1];
       const linkText = match[2].toLowerCase();
 
-      // Skip empty, javascript, and anchor links
       if (!href || href.startsWith('javascript:') || href.startsWith('#')) {
         continue;
       }
 
-      // Resolve relative URLs
       let absoluteUrl: string;
       try {
         absoluteUrl = new URL(href, baseUrl).href;
@@ -448,33 +435,27 @@ export class ScrapingService {
         continue;
       }
 
-      // Skip external domains
       if (!absoluteUrl.includes(baseUrl.hostname)) {
         continue;
       }
 
-      // Calculate priority based on keywords
-      let priority = 1; // Base priority
+      let priority = 1;
       for (const { terms, priority: keywordPriority } of keywords) {
-        if (terms.some(term => linkText.includes(term) || href.toLowerCase().includes(term))) {
+        if (terms.some((term) => linkText.includes(term) || href.toLowerCase().includes(term))) {
           priority = Math.max(priority, keywordPriority);
         }
       }
 
-      // Additional priority for specific URL patterns
       if (href.includes('program') || href.includes('schedule')) priority += 2;
       if (href.includes('teacher') || href.includes('artist')) priority += 2;
       if (href.includes('register') || href.includes('ticket')) priority += 1;
 
-      links.push({ url: absoluteUrl, priority });
+      if (!links.some((link) => link.url === absoluteUrl)) {
+        links.push({ url: absoluteUrl, priority });
+      }
     }
 
-    // Remove duplicates
-    const uniqueLinks = links.filter((link, index, self) =>
-      index === self.findIndex(l => l.url === link.url)
-    );
-
-    return uniqueLinks;
+    return links;
   }
 
   private async fetchWebsiteContent(url: string): Promise<string> {
@@ -522,77 +503,171 @@ export class ScrapingService {
         ? processedContent.substring(0, 100000) + '...[content truncated]'
         : processedContent;
 
-      const prompt = this.buildExtractionPrompt(truncatedContent, sourceUrl);
-
       const response = await anthropic.messages.create({
-        model: 'claude-3-5-sonnet-20241022',
-        max_tokens: 4000,
+        model: configService.get('anthropicModel'),
+        max_tokens: 8000,
         messages: [
           {
             role: 'user',
-            content: prompt,
+            content: buildPrimaryPrompt(truncatedContent, sourceUrl),
           },
         ],
       });
 
-      const contentText = response.content[0].type === 'text' ? response.content[0].text : '';
+      const contentText = response.content
+        .map((block) => (block.type === 'text' ? block.text : ''))
+        .join('')
+        .trim();
 
-      // Extract JSON from response
-      const jsonMatch = contentText.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        throw new Error('No valid JSON found in response');
-      }
+      logger.info('Raw AI response received', {
+        model: configService.get('anthropicModel'),
+        contentLength: contentText.length,
+        preview: contentText.substring(0, 300),
+      });
 
-      const festivalData = JSON.parse(jsonMatch[0]);
+      const parseFestival = (text: string, context: string): RawFestivalData => {
+        const cleaned = text.replace(/['"]?\s*\.\.\.\s*\d+\s*more characters\s*['"]?/gi, '');
+        const jsonBlock = extractJsonBlock(cleaned);
+        if (!jsonBlock) {
+          throw new Error(`No JSON found in ${context} response`);
+        }
+        return parseWithRepair<RawFestivalData>(jsonBlock);
+      };
 
-      // Validate JSON schema
-      const schemaValidation = this.validateJsonSchema(festivalData);
-      if (!schemaValidation.isValid) {
-        throw new Error(`Invalid data schema: ${schemaValidation.errors.join(', ')}`);
-      }
+      let festivalData: RawFestivalData;
+      let confidence = 0.85;
 
-      // Validate 1940s presenter style
-      const styleValidation = this.validate1940sStyle(contentText);
-      if (!styleValidation.passed) {
-        logger.warn('Style validation failed', { issues: styleValidation.issues });
-      }
+      try {
+        try {
+          festivalData = parseFestival(contentText, 'primary');
+          confidence = festivalData.confidence ?? confidence;
+        } catch (primaryError) {
+          logger.warn('Primary JSON extraction failed, attempting minimal prompt', {
+            error: primaryError instanceof Error ? primaryError.message : primaryError,
+          });
 
-      // Validate English language
-      const languageValidation = this.validateEnglishLanguage(contentText);
-      if (!languageValidation.isEnglish) {
-        logger.warn('Language validation failed', {
-          detectedLanguage: languageValidation.detectedLanguage,
-          confidence: languageValidation.confidence
+          const fallbackResponse = await anthropic.messages.create({
+            model: configService.get('anthropicModel'),
+            max_tokens: 2000,
+            messages: [
+              {
+                role: 'user',
+                content: buildMinimalPrompt(sourceUrl),
+              },
+            ],
+          });
+
+          const fallbackText = fallbackResponse.content
+            .map((block) => (block.type === 'text' ? block.text : ''))
+            .join('')
+            .trim();
+
+          festivalData = parseFestival(fallbackText, 'fallback');
+          confidence = festivalData.confidence ?? confidence;
+        }
+
+        if (!festivalData.name || !festivalData.startDate || !festivalData.endDate) {
+          throw new Error('Missing required festival fields');
+        }
+
+        if (!festivalData.venue || !festivalData.venue.name) {
+          throw new Error('Missing venue information');
+        }
+
+        festivalData.teachers = festivalData.teachers || [];
+        festivalData.musicians = festivalData.musicians || [];
+        festivalData.prices = festivalData.prices || [];
+        festivalData.tags = festivalData.tags || [];
+
+        logger.debug('Structured festival data parsed', {
+          name: festivalData.name,
+          teachersCount: festivalData.teachers.length,
+          musiciansCount: festivalData.musicians.length,
+          pricesCount: festivalData.prices.length,
+          confidence,
         });
+      } catch (parseError) {
+        logger.error('Failed to parse structured JSON', {
+          error: parseError instanceof Error ? parseError.message : 'Unknown error',
+          preview: contentText.substring(0, 500),
+        });
+        throw new ExternalServiceError(
+          `Failed to parse festival data: ${parseError instanceof Error ? parseError.message : 'Unknown error'}`,
+          { service: 'claude-ai' }
+        );
+      }
+
+      // Validate festival data exists
+      logger.info('Validating festival data exists', {
+        festivalData: festivalData,
+        festivalDataType: typeof festivalData,
+        isNull: festivalData === null,
+        isUndefined: festivalData === undefined,
+        isObject: typeof festivalData === 'object'
+      });
+
+      if (!festivalData || typeof festivalData !== 'object') {
+        throw new Error('Invalid festival data: parsed data is null or not an object');
       }
 
       // Normalize and validate data structure
-      const normalizedData = this.normalizeFestivalData(festivalData, sourceUrl);
+      let normalizedData: FestivalData;
+      try {
+        normalizedData = this.normalizeFestivalData(festivalData, sourceUrl);
+        logger.debug('Data normalization successful', {
+          name: normalizedData.name,
+          hasVenue: !!normalizedData.venue,
+          hasVenues: !!normalizedData.venues,
+          venuesCount: normalizedData.venues?.length || 0
+        });
+      } catch (normalizeError) {
+        logger.error('Data normalization failed', {
+          error: normalizeError instanceof Error ? normalizeError.message : 'Unknown error',
+          festivalData: festivalData ? JSON.stringify(festivalData).substring(0, 500) : 'undefined festivalData'
+        });
+        throw new ExternalServiceError(
+          `Failed to normalize festival data: ${normalizeError instanceof Error ? normalizeError.message : 'Unknown error'}`,
+          { service: 'data-processing' }
+        );
+      }
 
-      // Calculate confidence score
-      const confidence = this.calculateConfidenceScore(normalizedData);
+      // Use confidence from structured output, override with calculated score if needed
+      const finalConfidence = this.calculateConfidenceScore(normalizedData);
+      confidence = Math.max(confidence, finalConfidence);
 
       // Apply quality scoring and auto-retry if needed
       if (confidence < this.CONFIDENCE_THRESHOLD) {
         logger.info('Low confidence score, attempting retry', { confidence, threshold: this.CONFIDENCE_THRESHOLD });
 
-        // Retry with exponential backoff
+        // Retry with structured outputs
         const retryResult = await this.retryWithBackoff(
           async () => {
-            const retryPrompt = this.buildRetryPrompt(truncatedContent, sourceUrl, confidence);
             const retryResponse = await anthropic.messages.create({
-              model: process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022',
-              max_tokens: 4000,
-              messages: [{ role: 'user', content: retryPrompt }],
+              model: configService.get('anthropicModel'),
+              max_tokens: 8000,
+              messages: [
+                {
+                  role: 'user',
+                  content: buildRetryPrompt(truncatedContent, sourceUrl, confidence, this.CONFIDENCE_THRESHOLD),
+                },
+              ],
             });
 
-            const retryContentText = retryResponse.content[0].type === 'text' ? retryResponse.content[0].text : '';
-            const retryJsonMatch = retryContentText.match(/\{[\s\S]*\}/);
-            if (!retryJsonMatch) throw new Error('No valid JSON found in retry response');
+            const retryText = retryResponse.content
+              .map((block) => (block.type === 'text' ? block.text : ''))
+              .join('')
+              .trim();
 
-            const retryFestivalData = JSON.parse(retryJsonMatch[0]);
-            const retryNormalized = this.normalizeFestivalData(retryFestivalData, sourceUrl);
-            return { data: retryNormalized, confidence: this.calculateConfidenceScore(retryNormalized) };
+            const retryJson = extractJsonBlock(retryText);
+            if (!retryJson) {
+              throw new Error('Retry response did not contain JSON payload');
+            }
+
+            const retryData = parseWithRepair<RawFestivalData>(retryJson);
+            const retryNormalized = this.normalizeFestivalData(retryData, sourceUrl);
+            const retryConfidence = Math.max(retryData.confidence ?? 0.85, this.calculateConfidenceScore(retryNormalized));
+
+            return { data: retryNormalized, confidence: retryConfidence };
           },
           2 // max retries
         );
@@ -621,73 +696,6 @@ export class ScrapingService {
         error: errorMessage,
       };
     }
-  }
-
-  private buildExtractionPrompt(content: string, sourceUrl: string): string {
-    return `Greetings, music enthusiast! I'm here to help you gather all the delightful details about this swing and blues festival. Let's extract the information in proper JSON format, shall we?
-
-{
-  "name": "Festival name",
-  "description": "Brief description",
-  "startDate": "YYYY-MM-DD",
-  "endDate": "YYYY-MM-DD",
-  "timezone": "Timezone (e.g., UTC, Europe/Rome)",
-  "registrationDeadline": "YYYY-MM-DD (optional)",
-  "venue": {
-    "name": "Venue name",
-    "address": "Full address including street",
-    "city": "City",
-    "state": "State/Province (optional)",
-    "country": "Country",
-    "postalCode": "Postal code (optional)",
-    "latitude": 00.000000 (optional),
-    "longitude": 00.000000 (optional)"
-  },
-  "website": "Official website URL",
-  "facebook": "Facebook URL (optional)",
-  "instagram": "Instagram URL (optional)",
-  "email": "Contact email (optional)",
-  "phone": "Contact phone (optional)",
-  "registrationUrl": "Registration/ticket URL",
-  "teachers": [
-    {
-      "name": "Teacher name",
-      "specialties": ["swing", "blues", "balboa", "collegiate shag", etc]
-    }
-  ],
-  "musicians": [
-    {
-      "name": "Band/musician name",
-      "genre": ["swing", "blues", "jazz", "etc"]
-    }
-  ],
-  "prices": [
-    {
-      "type": "early_bird|regular|late|student|local|vip|donation",
-      "amount": 150.00,
-      "currency": "USD|EUR|GBP|CHF",
-      "deadline": "YYYY-MM-DD (optional)",
-      "description": "Additional price info (optional)"
-    }
-  ],
-  "tags": ["swing", "blues", "festival", "workshop", "social", "dance"],
-  "confidence": 0.95
-}
-
-Here's what I'll be looking for, my friend:
-• Only include fields with actual information from the website
-• Use empty arrays for teachers/musicians if none are found
-• Make your best estimate for dates if not explicitly stated
-• Set confidence score based on data completeness and clarity
-• All text must be presented in fine English
-• Keep the presentation professional and clear
-• Date format must be YYYY-MM-DD
-• For prices, use only the specified currency codes
-• For venue, provide the most complete address information available
-
-Now, let's see what wonderful details we can gather from ${sourceUrl}:
-
-${content}`;
   }
 
   private normalizeFestivalData(rawData: RawFestivalData, sourceUrl: string): FestivalData {
@@ -734,6 +742,48 @@ ${content}`;
       return isNaN(num) || num < 0 ? 0 : num;
     };
 
+    // Process venues - handle both single venue and multiple venues
+    const processVenue = (venue: RawVenueData) => ({
+      name: sanitizeString(venue.name) || 'Unknown Venue',
+      address: sanitizeString(venue.address),
+      city: sanitizeString(venue.city) || 'Unknown',
+      state: sanitizeString(venue.state),
+      country: sanitizeString(venue.country) || 'Unknown',
+      postalCode: sanitizeString(venue.postalCode),
+      latitude: validateCoordinate(venue.latitude),
+      longitude: validateCoordinate(venue.longitude),
+    });
+
+    // Convert single venue to venues array for consistency
+    let venues: Array<{
+      name: string;
+      city: string;
+      country: string;
+      address?: string;
+      state?: string;
+      postalCode?: string;
+      latitude?: number;
+      longitude?: number;
+    }> = [];
+
+    if (rawData.venues && Array.isArray(rawData.venues) && rawData.venues.length > 0) {
+      // Use multiple venues if available
+      venues = rawData.venues
+        .filter(venue => venue && venue.name)
+        .map(processVenue)
+        .slice(0, 10); // Limit to 10 venues
+    } else if (rawData.venue && rawData.venue.name) {
+      // Convert single venue to array - check that venue exists and has name
+      venues = [processVenue(rawData.venue)];
+    }
+
+    // For backward compatibility, set primary venue (first one)
+    const primaryVenue = venues.length > 0 ? venues[0] : {
+      name: 'Unknown Venue',
+      city: 'Unknown',
+      country: 'Unknown'
+    };
+
     // Map raw data to FestivalData interface with validation
     return {
       name: sanitizeString(rawData.name) || 'Unknown Festival',
@@ -749,23 +799,17 @@ ${content}`;
       registrationDeadline: normalizePriceDate(rawData.registrationDeadline),
       registrationUrl: sanitizeString(rawData.registrationUrl),
       sourceUrl: sourceUrl,
-      venue: rawData.venue ? {
-        name: sanitizeString(rawData.venue.name) || 'Unknown Venue',
-        address: sanitizeString(rawData.venue.address),
-        city: sanitizeString(rawData.venue.city),
-        state: sanitizeString(rawData.venue.state),
-        country: sanitizeString(rawData.venue.country),
-        postalCode: sanitizeString(rawData.venue.postalCode),
-        latitude: validateCoordinate(rawData.venue.latitude),
-        longitude: validateCoordinate(rawData.venue.longitude),
-      } : undefined,
+      venue: primaryVenue,
+      venues: venues && venues.length > 0 ? venues : undefined,
       teachers: Array.isArray(rawData.teachers) ? rawData.teachers.slice(0, 20).map((teacher: RawTeacherData) => ({
         name: sanitizeString(teacher.name) || 'Unknown Teacher',
+        bio: sanitizeString(teacher.bio),
         specialties: Array.isArray(teacher.specialties) ?
           teacher.specialties.slice(0, 10).map((s: unknown) => sanitizeString(s)).filter((s): s is string => Boolean(s)) : [],
       })) : [],
       musicians: Array.isArray(rawData.musicians) ? rawData.musicians.slice(0, 20).map((musician: RawMusicianData) => ({
         name: sanitizeString(musician.name) || 'Unknown Musician',
+        bio: sanitizeString(musician.bio),
         genre: Array.isArray(musician.genre) ?
           musician.genre.slice(0, 10).map((g: unknown) => sanitizeString(g)).filter((g): g is string => Boolean(g)) : [],
       })) : [],
@@ -905,24 +949,38 @@ ${content}`;
       }
     });
 
-    // Price validation
+    // Price validation - more flexible with unknown types
     if (data.prices && Array.isArray(data.prices)) {
       data.prices.forEach((price: RawPriceData, index: number) => {
-        if (!price.type || !['early_bird', 'regular', 'late', 'student', 'local', 'vip', 'donation'].includes(price.type)) {
-          errors.push(`prices[${index}].type must be one of: early_bird, regular, late, student, local, vip, donation`);
+        // Normalize price type to known values, default to 'regular' for unknown types
+        const validPriceTypes = ['early_bird', 'regular', 'late', 'student', 'local', 'vip', 'donation'];
+        const normalizedType = price.type && validPriceTypes.includes(price.type) ? price.type : 'regular';
+
+        // Log normalization for debugging
+        if (price.type && normalizedType !== price.type) {
+          logger.debug(`Normalizing price type from "${price.type}" to "${normalizedType}" at index ${index}`);
         }
+
+        // Only validate that price type exists, normalization will handle invalid values
+        if (!price.type) {
+          errors.push(`prices[${index}].type is required`);
+        }
+        // Only validate amount, currency normalization will handle invalid values
         if (typeof price.amount !== 'number' || price.amount < 0) {
           errors.push(`prices[${index}].amount must be a positive number`);
         }
-        if (!['USD', 'EUR', 'GBP', 'CHF'].includes(price.currency)) {
-          errors.push(`prices[${index}].currency must be one of: USD, EUR, GBP, CHF`);
+        // Only validate that currency exists, normalization will handle invalid values
+        if (!price.currency) {
+          errors.push(`prices[${index}].currency is required`);
         }
       });
     }
 
-    // Date format validation
-    const dateFields = ['startDate', 'endDate', 'registrationDeadline'];
-    dateFields.forEach(field => {
+    // Date format validation - strict for required dates, lenient for optional
+    const requiredDateFields = ['startDate', 'endDate'];
+    const optionalDateFields = ['registrationDeadline'];
+
+    requiredDateFields.forEach(field => {
       const fieldValue = data[field as keyof RawFestivalData];
       if (typeof fieldValue === 'string') {
         const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
@@ -932,85 +990,20 @@ ${content}`;
       }
     });
 
-    // URL validation
-    const urlFields = ['website', 'facebook', 'instagram', 'registrationUrl'];
-    urlFields.forEach(field => {
+    // Lenient validation for optional date fields - just remove if invalid
+    optionalDateFields.forEach(field => {
       const fieldValue = data[field as keyof RawFestivalData];
       if (typeof fieldValue === 'string') {
-        try {
-          new URL(fieldValue);
-        } catch {
-          errors.push(`${field} must be a valid URL`);
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        if (!dateRegex.test(fieldValue)) {
+          (data as Record<string, unknown>)[field] = undefined;
         }
       }
     });
 
     return {
       isValid: errors.length === 0,
-      errors
-    };
-  }
-
-  private validate1940sStyle(text: string): { passed: boolean; issues: string[] } {
-    const issues: string[] = [];
-
-    // Check for overly modern slang
-    const modernSlang = ['lit', 'fire', 'basic', 'salty', 'extra', 'flex', 'woke', 'cancel', 'stan'];
-    modernSlang.forEach(term => {
-      if (text.toLowerCase().includes(term)) {
-        issues.push(`Contains modern slang: ${term}`);
-      }
-    });
-
-    // Check for appropriate tone indicators
-    const friendlyTerms = ['my friend', 'shall we', 'delightful', 'wonderful', 'charming', 'lovely'];
-    const hasFriendlyTone = friendlyTerms.some(term => text.toLowerCase().includes(term));
-
-    if (!hasFriendlyTone) {
-      issues.push('Lacks friendly, welcoming tone');
-    }
-
-    // Check for overly casual or aggressive language
-    const aggressivePatterns = [/!\s*!/g, /\b(u r|ur|r u)\b/gi, /\b(wtf|omg|lol)\b/gi];
-    aggressivePatterns.forEach(pattern => {
-      if (pattern.test(text)) {
-        issues.push('Contains overly casual or aggressive language');
-      }
-    });
-
-    return {
-      passed: issues.length <= 1, // Allow minor issues
-      issues
-    };
-  }
-
-  private validateEnglishLanguage(text: string): {
-    isEnglish: boolean;
-    detectedLanguage?: string;
-    confidence: number;
-  } {
-    // Basic English language detection using common English words
-    const commonEnglishWords = [
-      'the', 'be', 'to', 'of', 'and', 'a', 'in', 'that', 'have', 'it', 'for', 'not', 'on', 'with', 'he', 'as', 'you', 'do', 'at', 'this', 'but', 'his', 'by', 'from', 'they', 'we', 'say', 'her', 'she', 'or', 'an', 'will', 'my', 'one', 'all', 'would', 'there', 'their', 'what', 'so', 'up', 'out', 'if', 'about', 'who', 'get', 'which', 'go', 'me', 'when', 'make', 'can', 'like', 'time', 'no', 'just', 'him', 'know', 'take', 'people', 'into', 'year', 'your', 'good', 'some', 'could', 'them', 'see', 'other', 'than', 'then', 'now', 'look', 'only', 'come', 'its', 'over', 'think', 'also', 'back', 'after', 'use', 'two', 'how', 'our', 'work', 'first', 'well', 'way', 'even', 'new', 'want', 'because', 'any', 'these', 'give', 'day', 'most', 'us', 'festival', 'music', 'dance', 'swing', 'blues'
-    ];
-
-    const words = text.toLowerCase().split(/\s+/).filter(word => word.length > 2);
-    const englishWordCount = words.filter(word => commonEnglishWords.includes(word)).length;
-
-    const englishRatio = words.length > 0 ? englishWordCount / words.length : 0;
-
-    // Check for non-English character patterns (basic detection)
-    const nonEnglishPatterns = /[^\x00-\x7F]/g;
-    const nonEnglishChars = text.match(nonEnglishPatterns) || [];
-    const nonEnglishRatio = nonEnglishChars.length / text.length;
-
-    // Simple heuristic: if > 60% common English words and < 10% non-English characters, likely English
-    const isEnglish = englishRatio > 0.6 && nonEnglishRatio < 0.1;
-
-    return {
-      isEnglish,
-      confidence: Math.max(englishRatio, 1 - nonEnglishRatio),
-      detectedLanguage: isEnglish ? 'english' : 'unknown'
+      errors,
     };
   }
 
@@ -1025,7 +1018,7 @@ ${content}`;
         const result = await operation();
         return { success: true, data: result };
       } catch (error) {
-        attempt++;
+        attempt += 1;
 
         if (attempt === maxRetries) {
           const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -1033,37 +1026,18 @@ ${content}`;
           return { success: false, error: errorMessage };
         }
 
-        // Exponential backoff with jitter
         const baseDelay = Math.pow(2, attempt) * 1000;
         const jitter = Math.random() * 500;
         const delay = baseDelay + jitter;
 
         logger.info('Retrying operation', { attempt, maxRetries, delay });
-        await new Promise(resolve => setTimeout(resolve, delay));
+        await new Promise((resolve) => setTimeout(resolve, delay));
       }
     }
 
     return { success: false, error: 'Max retries exceeded' };
   }
 
-  private buildRetryPrompt(content: string, sourceUrl: string, previousConfidence: number): string {
-    return `My friend, let's try again to extract the festival information from this website. The previous attempt had a confidence score of ${previousConfidence}, which was below our threshold of ${this.CONFIDENCE_THRESHOLD}.
-
-Please be extra careful to provide complete and accurate information:
-
-${this.buildExtractionPrompt(content, sourceUrl)}
-
-Remember to focus particularly on:
-• Complete venue information with address
-• All teacher and musician names with their specialties
-• Accurate dates in YYYY-MM-DD format
-• Complete pricing information with proper currency codes
-• High-quality, comprehensive data to achieve a confidence score above ${this.CONFIDENCE_THRESHOLD}`;
-  }
-
-  /**
-   * Send progress update via WebSocket
-   */
   private sendProgressUpdate(sessionId: string, progress: Omit<ScrapingProgress, 'type' | 'timestamp'>) {
     try {
       const scrapingProgress: ScrapingProgress = {

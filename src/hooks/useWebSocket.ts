@@ -26,13 +26,19 @@ export function useWebSocket(): WebSocketHookReturn {
   const RECONNECT_DELAY = 3000;
 
   const connect = useCallback((sessionId: string) => {
+    // Always disconnect and clean up previous connection completely
     if (socketRef.current?.connected) {
       socketRef.current.disconnect();
     }
 
-    sessionIdRef.current = sessionId;
+    // Clear all previous state
+    socketRef.current = null;
+    setIsConnected(false);
     setError(null);
+    setLastProgress(null);
     reconnectAttemptsRef.current = 0;
+
+    sessionIdRef.current = sessionId;
 
     try {
       const socket = io(process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000', {
@@ -77,8 +83,13 @@ export function useWebSocket(): WebSocketHookReturn {
 
       // Progress updates
       socket.on('progress-update', (progress: ScrapingProgress | ValidationProgress | ImportProgress) => {
-        console.log('Progress update received:', progress);
-        setLastProgress(progress);
+        // Only process progress updates for the current session
+        if (progress.sessionId === sessionIdRef.current) {
+          console.log('Progress update received for current session:', progress);
+          setLastProgress(progress);
+        } else {
+          console.log('Ignoring progress update for different session:', progress.sessionId);
+        }
       });
 
       // Error messages

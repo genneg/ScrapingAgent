@@ -35,59 +35,58 @@ interface OperationHistoryProps {
 }
 
 export default function OperationHistory({ operations = [], onOperationSelect }: OperationHistoryProps) {
+  const [dbOperations, setDbOperations] = useState<OperationRecord[]>([]);
   const [filteredOperations, setFilteredOperations] = useState<OperationRecord[]>([]);
   const [statusFilter, setStatusFilter] = useState<'all' | OperationRecord['status']>('all');
   const [typeFilter, setTypeFilter] = useState<'all' | OperationRecord['type']>('all');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  // Mock data for demonstration
-  const mockOperations: OperationRecord[] = [
-    {
-      id: '1',
-      type: 'url_scraping',
-      source: 'https://swingcityfestival.com',
-      status: 'completed',
-      startTime: new Date(Date.now() - 1000 * 60 * 30), // 30 minutes ago
-      endTime: new Date(Date.now() - 1000 * 60 * 25), // 25 minutes ago
-      progress: 100,
-      confidence: 94,
-      eventsImported: 1,
-      venuesImported: 1,
-      teachersImported: 8
-    },
-    {
-      id: '2',
-      type: 'file_upload',
-      source: 'blues-weekend-2024.json',
-      status: 'completed',
-      startTime: new Date(Date.now() - 1000 * 60 * 60 * 2), // 2 hours ago
-      endTime: new Date(Date.now() - 1000 * 60 * 60 * 1.8), // 1.8 hours ago
-      progress: 100,
-      confidence: 98,
-      eventsImported: 1,
-      venuesImported: 1,
-      teachersImported: 12
-    },
-    {
-      id: '3',
-      type: 'url_scraping',
-      source: 'https://lindyhopfestival.org',
-      status: 'error',
-      startTime: new Date(Date.now() - 1000 * 60 * 60 * 4), // 4 hours ago
-      endTime: new Date(Date.now() - 1000 * 60 * 60 * 3.5), // 3.5 hours ago
-      progress: 65,
-      error: 'Website structure too complex for AI extraction'
-    },
-    {
-      id: '4',
-      type: 'file_upload',
-      source: 'swing-parade.json',
-      status: 'processing',
-      startTime: new Date(Date.now() - 1000 * 60 * 5), // 5 minutes ago
-      progress: 78
-    }
-  ];
+  // Fetch operations from database
+  useEffect(() => {
+    const fetchOperations = async () => {
+      try {
+        setLoading(true);
+        setError(null);
 
-  const allOperations = operations.length > 0 ? operations : mockOperations;
+        const response = await fetch('/api/history');
+        const result = await response.json();
+
+        if (result.success && result.data.operations) {
+          // Transform database records to OperationRecord format
+          const transformedOps: OperationRecord[] = result.data.operations.map((op: any) => ({
+            id: op.id,
+            type: op.type,
+            source: op.source,
+            status: op.status,
+            startTime: new Date(op.startTime),
+            endTime: op.endTime ? new Date(op.endTime) : undefined,
+            progress: op.progress || 0,
+            confidence: op.confidence || undefined,
+            error: op.error || undefined,
+            eventsImported: op.eventsImported || 0,
+            venuesImported: op.venuesImported || 0,
+            teachersImported: op.teachersImported || 0,
+            musiciansImported: op.musiciansImported || 0,
+            tagsImported: op.tagsImported || 0
+          }));
+
+          setDbOperations(transformedOps);
+        } else {
+          setError(result.error?.message || 'Failed to fetch operations');
+        }
+      } catch (err) {
+        setError('Failed to connect to database');
+        console.error('Error fetching operations:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchOperations();
+  }, []);
+
+  const allOperations = operations.length > 0 ? operations : dbOperations;
 
   useEffect(() => {
     let filtered = allOperations;
@@ -105,6 +104,41 @@ export default function OperationHistory({ operations = [], onOperationSelect }:
 
     setFilteredOperations(filtered);
   }, [allOperations, statusFilter, typeFilter]);
+
+  const handleRefresh = useCallback(() => {
+    // Trigger a re-fetch by setting loading state
+    setLoading(true);
+    fetch('/api/history')
+      .then(res => res.json())
+      .then(result => {
+        if (result.success && result.data.operations) {
+          const transformedOps: OperationRecord[] = result.data.operations.map((op: any) => ({
+            id: op.id,
+            type: op.type,
+            source: op.source,
+            status: op.status,
+            startTime: new Date(op.startTime),
+            endTime: op.endTime ? new Date(op.endTime) : undefined,
+            progress: op.progress || 0,
+            confidence: op.confidence || undefined,
+            error: op.error || undefined,
+            eventsImported: op.eventsImported || 0,
+            venuesImported: op.venuesImported || 0,
+            teachersImported: op.teachersImported || 0,
+            musiciansImported: op.musiciansImported || 0,
+            tagsImported: op.tagsImported || 0
+          }));
+          setDbOperations(transformedOps);
+        }
+      })
+      .catch(err => {
+        setError('Failed to refresh data');
+        console.error('Error refreshing operations:', err);
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+  }, []);
 
   // Memoized Operation Card component to prevent unnecessary re-renders
   const OperationCard = memo(function OperationCard({
@@ -280,6 +314,39 @@ export default function OperationHistory({ operations = [], onOperationSelect }:
     return { total, completed, errors, processing, avgConfidence };
   }, [allOperations]);
 
+  if (loading) {
+    return (
+      <div className="max-w-6xl mx-auto p-6">
+        <div className="flex items-center justify-center space-x-3">
+          <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+          <span className="text-gray-600">Loading operation history...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="max-w-6xl mx-auto p-6">
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <XCircle className="w-5 h-5 text-red-600" />
+              <span className="text-red-700 font-medium">Error loading operation history</span>
+            </div>
+            <button
+              onClick={handleRefresh}
+              className="px-3 py-1 bg-red-600 text-white rounded text-sm hover:bg-red-700"
+            >
+              Retry
+            </button>
+          </div>
+          <p className="text-red-600 mt-2 text-sm">{error}</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-6xl mx-auto p-6 space-y-6">
       {/* Header */}
@@ -288,8 +355,17 @@ export default function OperationHistory({ operations = [], onOperationSelect }:
           <History className="w-6 h-6 text-gray-700" />
           <h2 className="text-2xl font-bold text-gray-900">Operation History</h2>
         </div>
-        <div className="text-sm text-gray-600">
-          {filteredOperations.length} of {allOperations.length} operations
+        <div className="flex items-center space-x-4">
+          <button
+            onClick={handleRefresh}
+            className="flex items-center space-x-1 px-3 py-1 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+          >
+            <Loader2 className="w-4 h-4" />
+            <span>Refresh</span>
+          </button>
+          <div className="text-sm text-gray-600">
+            {filteredOperations.length} of {allOperations.length} operations
+          </div>
         </div>
       </div>
 

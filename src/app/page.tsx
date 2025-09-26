@@ -1,5 +1,6 @@
 import UnifiedImportDashboard from '@/components/UnifiedImportDashboard';
 import OperationHistory from '@/components/OperationHistory';
+import ImportedFestivals from '@/components/ImportedFestivals';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 
 export default function Home() {
@@ -114,6 +115,13 @@ export default function Home() {
         <ErrorBoundary>
           <UnifiedImportDashboard />
         </ErrorBoundary>
+
+        {/* Imported Festivals */}
+        <div className="mt-12">
+          <ErrorBoundary>
+            <ImportedFestivals />
+          </ErrorBoundary>
+        </div>
 
         {/* Operation History */}
         <ErrorBoundary>

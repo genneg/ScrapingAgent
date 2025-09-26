@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { BaseError, ErrorUtils, ValidationError, AuthenticationError, RateLimitError } from '@/lib/errors';
 import { logger } from '@/lib/logger';
-import { rateLimiterService } from '@/services/rate-limiter';
+import { rateLimiterService } from '@/services/rate-limiter-simple';
 
 export interface ApiHandlerOptions {
   requireAuth?: boolean;

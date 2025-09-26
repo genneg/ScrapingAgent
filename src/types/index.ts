@@ -1,33 +1,9 @@
-// Core festival data types
-export interface FestivalData {
-  name: string;
-  description?: string;
-  website?: string;
-  facebook?: string;
-  instagram?: string;
-  email?: string;
-  phone?: string;
-
-  startDate: Date;
-  endDate: Date;
-  timezone?: string;
-  registrationDeadline?: Date;
-  registrationUrl?: string;
-  sourceUrl?: string;
-
-  venue?: VenueData;
-  teachers?: TeacherData[];
-  musicians?: MusicianData[];
-  prices?: PriceData[];
-  tags?: string[];
-}
-
 export interface VenueData {
   name: string;
+  city: string;
+  country: string;
   address?: string;
-  city?: string;
   state?: string;
-  country?: string;
   postalCode?: string;
   latitude?: number;
   longitude?: number;
@@ -35,50 +11,49 @@ export interface VenueData {
 
 export interface TeacherData {
   name: string;
+  bio?: string;
   specialties?: string[];
 }
 
 export interface MusicianData {
   name: string;
+  bio?: string;
   genre?: string[];
+  instruments?: string[];
 }
 
 export interface PriceData {
   type: string;
   amount: number;
   currency: string;
-  deadline?: Date;
+  deadline?: Date | string;
   description?: string;
 }
 
-// API types
-export interface ScrapingRequest {
-  url: string;
-  confidenceThreshold?: number;
-}
-
-export interface ScrapingResponse {
+export interface Result<T, E = Error> {
   success: boolean;
-  data?: FestivalData;
-  error?: {
-    code: string;
-    message: string;
-    details?: unknown;
-  };
-  meta?: {
-    timestamp: string;
-    requestId: string;
-    confidence: number;
-  };
+  data?: T;
+  error?: E;
 }
 
-// Error types
-export interface AppError {
-  code: string;
-  message: string;
-  details?: unknown;
+export interface FestivalData {
+  name: string;
+  description?: string;
+  startDate: Date | string;
+  endDate: Date | string;
+  timezone?: string;
+  registrationDeadline?: Date | string;
+  venue: VenueData;
+  venues?: VenueData[];
+  teachers?: TeacherData[];
+  musicians?: MusicianData[];
+  prices?: PriceData[];
+  tags?: string[];
+  website?: string;
+  facebook?: string;
+  instagram?: string;
+  email?: string;
+  phone?: string;
+  registrationUrl?: string;
+  sourceUrl?: string;
 }
-
-export type Result<T, E = AppError> =
-  | { success: true; data: T }
-  | { success: false; error: E };

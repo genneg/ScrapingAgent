@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { scrapingService } from '@/services/scraping';
 import { logger } from '@/lib/logger';
-import { rateLimiterService } from '@/services/rate-limiter';
+import { rateLimiterService } from '@/services/rate-limiter-simple';
 import { SecurityUtils } from '@/lib/security-utils';
 
 export async function POST(request: NextRequest) {

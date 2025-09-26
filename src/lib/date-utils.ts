@@ -2,8 +2,29 @@
  * Date utility functions for consistent date formatting and manipulation
  */
 
-export function formatDate(date: Date, format: string = 'PPP'): string {
+export function formatDate(date: Date | string | null | undefined, format: string = 'PPP'): string {
   try {
+    // Handle null, undefined, or invalid dates
+    if (!date) {
+      return 'No date';
+    }
+
+    // Convert string to Date if needed
+    let dateObj: Date;
+    if (typeof date === 'string') {
+      dateObj = new Date(date);
+      if (isNaN(dateObj.getTime())) {
+        return 'Invalid date';
+      }
+    } else if (date instanceof Date) {
+      if (isNaN(date.getTime())) {
+        return 'Invalid date';
+      }
+      dateObj = date;
+    } else {
+      return 'Invalid date';
+    }
+
     // Simple date formatter - in production you might want to use date-fns or similar
     const options: Intl.DateTimeFormatOptions = {
       year: 'numeric',
@@ -13,17 +34,17 @@ export function formatDate(date: Date, format: string = 'PPP'): string {
 
     switch (format) {
       case 'yyyy-MM-dd':
-        return date.toISOString().split('T')[0];
+        return dateObj.toISOString().split('T')[0];
       case 'PPP':
-        return date.toLocaleDateString('en-US', options);
+        return dateObj.toLocaleDateString('en-US', options);
       case 'PP':
-        return date.toLocaleDateString('en-US', {
+        return dateObj.toLocaleDateString('en-US', {
           year: 'numeric',
           month: 'short',
           day: 'numeric'
         });
       default:
-        return date.toLocaleDateString('en-US', options);
+        return dateObj.toLocaleDateString('en-US', options);
     }
   } catch (error) {
     console.error('Error formatting date:', error);

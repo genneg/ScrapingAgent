@@ -97,26 +97,15 @@ const ConfidenceScore: React.FC<ConfidenceScoreProps> = ({
     return 'Data quality is poor, manual review and correction required';
   }, [validatedConfidence]);
 
-  const renderIcon = (iconName: string) => {
-    switch (iconName) {
-      case 'trending-up':
-        return <TrendingUp className={`w-5 h-5 ${currentColors.text}`} />;
-      case 'trending-down':
-        return <TrendingDown className={`w-5 h-5 ${currentColors.text}`} />;
-      case 'minus':
-        return <Minus className={`w-5 h-5 ${currentColors.text}`} />;
-      default:
-        return <Star className={`w-5 h-5 ${currentColors.text}`} />;
-    }
-  };
+  // Icon is now a React component, not a string
 
   return (
     <div className={`space-y-2 ${className}`}>
       {/* Main Score Display */}
       <div className="flex items-center space-x-3">
-        {showIcon && (
+        {showIcon && Icon && (
           <div className={`p-2 rounded-lg ${currentColors.badge}`}>
-            {renderIcon(Icon)}
+            <Icon className={`w-5 h-5 ${currentColors.text}`} />
           </div>
         )}
 

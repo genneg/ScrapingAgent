@@ -1,364 +1,174 @@
-export interface BaseErrorOptions {
-  code: string;
-  message: string;
-  details?: unknown;
-  cause?: Error;
-  context?: Record<string, unknown>;
-}
+import { NextResponse } from 'next/server';
 
-export interface ApiResponse<T = unknown> {
-  success: boolean;
-  data?: T;
-  error?: {
-    code: string;
-    message: string;
-    details?: unknown;
-    traceId?: string;
-  };
-  meta?: {
-    timestamp: string;
-    requestId: string;
-    version?: string;
-  };
-}
+// Error classes for the application
 
-export interface WebSocketEvent<T = unknown> {
-  type: string;
-  payload: T;
-  timestamp: string;
-  sessionId: string;
-  traceId?: string;
-}
-
-// Base error class
 export class BaseError extends Error {
   public readonly code: string;
+  public readonly statusCode: number;
   public readonly details?: unknown;
-  public readonly cause?: Error;
-  public readonly context?: Record<string, unknown>;
-  public readonly timestamp: string;
-  public readonly traceId: string;
 
-  constructor(options: BaseErrorOptions) {
+  constructor(options: {
+    code: string;
+    message: string;
+    statusCode?: number;
+    details?: unknown;
+    cause?: Error;
+  }) {
     super(options.message);
     this.name = this.constructor.name;
     this.code = options.code;
+    this.statusCode = options.statusCode || 500;
     this.details = options.details;
-    this.cause = options.cause;
-    this.context = options.context;
-    this.timestamp = new Date().toISOString();
-    this.traceId = this.generateTraceId();
+
+    if (options.cause) {
+      this.cause = options.cause;
+    }
 
     // Maintain proper stack trace
-    if (Error.captureStackTrace) {
-      Error.captureStackTrace(this, this.constructor);
-    }
-  }
-
-  private generateTraceId(): string {
-    return `trace_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  }
-
-  toJSON() {
-    return {
-      name: this.name,
-      code: this.code,
-      message: this.message,
-      details: this.details,
-      context: this.context,
-      timestamp: this.timestamp,
-      traceId: this.traceId,
-      stack: this.stack,
-    };
+    Error.captureStackTrace(this, this.constructor);
   }
 }
 
-// Specific error types
 export class ValidationError extends BaseError {
-  constructor(
-    message: string,
-    public readonly field?: string,
-    public readonly value?: unknown,
-    options?: Omit<BaseErrorOptions, 'code' | 'message'>
-  ) {
+  constructor(message: string, details?: unknown) {
     super({
       code: 'VALIDATION_ERROR',
       message,
-      ...options,
+      statusCode: 400,
+      details,
     });
-    this.name = 'ValidationError';
-  }
-}
-
-export class AuthenticationError extends BaseError {
-  constructor(
-    message: string = 'Authentication failed',
-    options?: Omit<BaseErrorOptions, 'code' | 'message'>
-  ) {
-    super({
-      code: 'AUTHENTICATION_ERROR',
-      message,
-      ...options,
-    });
-    this.name = 'AuthenticationError';
-  }
-}
-
-export class AuthorizationError extends BaseError {
-  constructor(
-    message: string = 'Authorization failed',
-    options?: Omit<BaseErrorOptions, 'code' | 'message'>
-  ) {
-    super({
-      code: 'AUTHORIZATION_ERROR',
-      message,
-      ...options,
-    });
-    this.name = 'AuthorizationError';
-  }
-}
-
-export class NotFoundError extends BaseError {
-  constructor(
-    resource: string,
-    id?: string,
-    options?: Omit<BaseErrorOptions, 'code' | 'message'>
-  ) {
-    const message = id ? `${resource} with id '${id}' not found` : `${resource} not found`;
-    super({
-      code: 'NOT_FOUND_ERROR',
-      message,
-      ...options,
-    });
-    this.name = 'NotFoundError';
-  }
-}
-
-export class ConflictError extends BaseError {
-  constructor(
-    message: string,
-    options?: Omit<BaseErrorOptions, 'code' | 'message'>
-  ) {
-    super({
-      code: 'CONFLICT_ERROR',
-      message,
-      ...options,
-    });
-    this.name = 'ConflictError';
-  }
-}
-
-export class RateLimitError extends BaseError {
-  constructor(
-    message: string = 'Rate limit exceeded',
-    public readonly retryAfter?: number,
-    options?: Omit<BaseErrorOptions, 'code' | 'message'>
-  ) {
-    super({
-      code: 'RATE_LIMIT_ERROR',
-      message,
-      ...options,
-    });
-    this.name = 'RateLimitError';
   }
 }
 
 export class ExternalServiceError extends BaseError {
-  constructor(
-    public readonly service: string,
-    message: string = 'External service error',
-    options?: Omit<BaseErrorOptions, 'code' | 'message'>
-  ) {
+  constructor(message: string, details?: unknown) {
     super({
       code: 'EXTERNAL_SERVICE_ERROR',
       message,
-      ...options,
+      statusCode: 502,
+      details,
     });
-    this.name = 'ExternalServiceError';
+  }
+}
+
+export class AuthenticationError extends BaseError {
+  constructor(message: string, details?: unknown) {
+    super({
+      code: 'AUTHENTICATION_ERROR',
+      message,
+      statusCode: 401,
+      details,
+    });
+  }
+}
+
+export class AuthorizationError extends BaseError {
+  constructor(message: string, details?: unknown) {
+    super({
+      code: 'AUTHORIZATION_ERROR',
+      message,
+      statusCode: 403,
+      details,
+    });
+  }
+}
+
+export class RateLimitError extends BaseError {
+  constructor(message: string, public readonly retryAfter?: number) {
+    super({
+      code: 'RATE_LIMIT_ERROR',
+      message,
+      statusCode: 429,
+    });
   }
 }
 
 export class DatabaseError extends BaseError {
-  constructor(
-    message: string = 'Database operation failed',
-    options?: Omit<BaseErrorOptions, 'code' | 'message'>
-  ) {
+  constructor(message: string, details?: unknown) {
     super({
       code: 'DATABASE_ERROR',
       message,
-      ...options,
+      statusCode: 500,
+      details,
     });
-    this.name = 'DatabaseError';
   }
 }
 
 export class ConfigurationError extends BaseError {
-  constructor(
-    message: string = 'Configuration error',
-    options?: Omit<BaseErrorOptions, 'code' | 'message'>
-  ) {
+  constructor(message: string, details?: unknown) {
     super({
       code: 'CONFIGURATION_ERROR',
       message,
-      ...options,
+      statusCode: 500,
+      details,
     });
-    this.name = 'ConfigurationError';
   }
 }
 
-// Error utilities
+// Utility class for error handling
 export class ErrorUtils {
-  /**
-   * Create a standardized API response for errors
-   */
-  static createErrorResponse<T = unknown>(
-    error: BaseError | Error,
-    status: number = 500,
-    requestId?: string
-  ): NextResponse {
-    const timestamp = new Date().toISOString();
-    const traceId = error instanceof BaseError ? error.traceId : this.generateTraceId();
-
-    const errorResponse: ApiResponse<T> = {
-      success: false,
-      error: {
-        code: error instanceof BaseError ? error.code : 'INTERNAL_ERROR',
+  static formatForLogging(error: Error | BaseError): unknown {
+    if (error instanceof BaseError) {
+      return {
+        name: error.name,
+        code: error.code,
         message: error.message,
-        details: error instanceof BaseError ? error.details : undefined,
-        traceId,
-      },
-      meta: {
-        timestamp,
-        requestId: requestId || traceId,
-      },
-    };
-
-    return new NextResponse(JSON.stringify(errorResponse), {
-      status,
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Trace-ID': traceId,
-        'X-Request-ID': requestId || traceId,
-      },
-    });
-  }
-
-  /**
-   * Create a standardized success response
-   */
-  static createSuccessResponse<T>(
-    data: T,
-    status: number = 200,
-    requestId?: string
-  ): NextResponse {
-    const timestamp = new Date().toISOString();
-    const traceId = this.generateTraceId();
-
-    const response: ApiResponse<T> = {
-      success: true,
-      data,
-      meta: {
-        timestamp,
-        requestId: requestId || traceId,
-      },
-    };
-
-    return new NextResponse(JSON.stringify(response), {
-      status,
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Trace-ID': traceId,
-        'X-Request-ID': requestId || traceId,
-      },
-    });
-  }
-
-  /**
-   * Wrap async functions with standardized error handling
-   */
-  static async withErrorHandling<T>(
-    fn: () => Promise<T>,
-    fallback?: T
-  ): Promise<T> {
-    try {
-      return await fn();
-    } catch (error) {
-      if (error instanceof BaseError) {
-        throw error;
-      }
-
-      // Convert unknown errors to BaseError
-      throw new BaseError({
-        code: 'INTERNAL_ERROR',
-        message: error instanceof Error ? error.message : 'Unknown error occurred',
-        cause: error instanceof Error ? error : undefined,
-      });
+        statusCode: error.statusCode,
+        details: error.details,
+        stack: error.stack,
+      };
     }
-  }
 
-  /**
-   * Check if error is retryable
-   */
-  static isRetryable(error: Error): boolean {
-    if (error instanceof RateLimitError) return true;
-    if (error instanceof ExternalServiceError) return true;
-    if (error instanceof DatabaseError) {
-      // Common database connection errors
-      const retryableCodes = [
-        'ECONNREFUSED',
-        'ETIMEDOUT',
-        'ECONNRESET',
-        'EREADONLY',
-      ];
-      return retryableCodes.some(code => error.message.includes(code));
-    }
-    return false;
-  }
-
-  /**
-   * Get error status code for HTTP responses
-   */
-  static getHttpStatus(error: Error): number {
-    if (error instanceof ValidationError) return 400;
-    if (error instanceof AuthenticationError) return 401;
-    if (error instanceof AuthorizationError) return 403;
-    if (error instanceof NotFoundError) return 404;
-    if (error instanceof ConflictError) return 409;
-    if (error instanceof RateLimitError) return 429;
-    if (error instanceof ConfigurationError) return 500;
-    if (error instanceof ExternalServiceError) return 502;
-    if (error instanceof DatabaseError) return 503;
-    return 500;
-  }
-
-  /**
-   * Format error for logging
-   */
-  static formatForLogging(error: Error): Record<string, unknown> {
-    const base = {
+    return {
       name: error.name,
       message: error.message,
       stack: error.stack,
     };
-
-    if (error instanceof BaseError) {
-      return {
-        ...base,
-        code: error.code,
-        details: error.details,
-        context: error.context,
-        timestamp: error.timestamp,
-        traceId: error.traceId,
-      };
-    }
-
-    return base;
   }
 
-  private static generateTraceId(): string {
-    return `trace_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  static getHttpStatus(error: BaseError): number {
+    return error.statusCode;
+  }
+
+  static createErrorResponse(
+    error: BaseError,
+    statusCode?: number,
+    requestId?: string
+  ): NextResponse {
+    const responseStatus = statusCode || error.statusCode;
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: {
+          code: error.code,
+          message: error.message,
+          ...(error.details && typeof error.details === 'object' ? { details: error.details } : {}),
+        },
+        ...(requestId && { requestId }),
+        timestamp: new Date().toISOString(),
+      },
+      {
+        status: responseStatus,
+      }
+    );
+  }
+
+  static createSuccessResponse(
+    data: unknown,
+    statusCode = 200,
+    requestId?: string
+  ): NextResponse {
+    return NextResponse.json(
+      {
+        success: true,
+        data,
+        ...(requestId && { requestId }),
+        timestamp: new Date().toISOString(),
+      },
+      {
+        status: statusCode,
+      }
+    );
   }
 }
-
-// Re-export NextResponse for convenience
-import { NextResponse } from 'next/server';

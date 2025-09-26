@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
 import { performanceService } from '@/services/performance';
 import { SecurityUtils } from '@/lib/security-utils';
+import { databaseService } from '@/lib/database-direct';
 
 export async function GET(request: NextRequest) {
   try {
@@ -18,7 +18,7 @@ export async function GET(request: NextRequest) {
     dbTimer.start();
 
     try {
-      await prisma.$queryRaw`SELECT 1`;
+      await databaseService.testConnection();
       databaseResponseTime = dbTimer.stop();
     } catch (error) {
       databaseStatus = 'unhealthy';

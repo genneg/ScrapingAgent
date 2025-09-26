@@ -1,4 +1,5 @@
 import React from 'react';
+import { Wifi, RefreshCw, AlertTriangle, CheckCircle, Clock, Server, FileText, MapPin, XCircle, ExternalLink, Shield, TrendingUp, Minus, TrendingDown } from 'lucide-react';
 import { ValidationResult, ValidationErrorDetail, ValidationWarning } from '@/services/validation';
 
 // Confidence scoring utilities
@@ -14,11 +15,11 @@ export const getConfidenceBg = (confidence: number): string => {
   return 'bg-red-100';
 };
 
-export const getConfidenceLevel = (confidence: number): { level: string; color: string; icon: string } => {
-  if (confidence >= 0.9) return { level: 'Excellent', color: 'green', icon: 'trending-up' };
-  if (confidence >= 0.7) return { level: 'Good', color: 'yellow', icon: 'trending-up' };
-  if (confidence >= 0.5) return { level: 'Fair', color: 'orange', icon: 'minus' };
-  return { level: 'Poor', color: 'red', icon: 'trending-down' };
+export const getConfidenceLevel = (confidence: number): { level: string; color: string; icon: React.ComponentType<React.SVGProps<SVGSVGElement>> } => {
+  if (confidence >= 0.9) return { level: 'Excellent', color: 'green', icon: TrendingUp };
+  if (confidence >= 0.7) return { level: 'Good', color: 'yellow', icon: TrendingUp };
+  if (confidence >= 0.5) return { level: 'Fair', color: 'orange', icon: Minus };
+  return { level: 'Poor', color: 'red', icon: TrendingDown };
 };
 
 // Severity utilities
@@ -182,13 +183,13 @@ export const getErrorSolutions = (code: string, message: string, details?: unkno
     {
       action: 'Check Connection',
       description: 'Verify your internet connection and try again',
-      icon: 'wifi',
+      icon: Wifi,
       priority: 'high'
     },
     {
       action: 'Refresh Page',
       description: 'Reload the page to reset the application state',
-      icon: 'refresh-cw',
+      icon: RefreshCw,
       priority: 'high'
     }
   ];
@@ -198,7 +199,7 @@ export const getErrorSolutions = (code: string, message: string, details?: unkno
       {
         action: 'Check Internet Connection',
         description: 'Ensure you have a stable internet connection',
-        icon: 'wifi',
+        icon: Wifi,
         priority: 'high',
         steps: [
           'Check if other websites load properly',
@@ -210,7 +211,7 @@ export const getErrorSolutions = (code: string, message: string, details?: unkno
       {
         action: 'Verify Service Status',
         description: 'Check if external services are operational',
-        icon: 'external-link',
+        icon: ExternalLink,
         priority: 'medium',
         steps: [
           'Visit the service status page',
@@ -224,7 +225,7 @@ export const getErrorSolutions = (code: string, message: string, details?: unkno
       {
         action: 'Review Input Data',
         description: 'Check your data for missing or incorrect information',
-        icon: 'file-text',
+        icon: FileText,
         priority: 'high',
         steps: [
           'Verify all required fields are filled',
@@ -236,7 +237,7 @@ export const getErrorSolutions = (code: string, message: string, details?: unkno
       {
         action: 'Use Validation Tools',
         description: 'Use built-in validation to identify specific issues',
-        icon: 'shield',
+        icon: Shield,
         priority: 'medium'
       }
     ],
@@ -244,7 +245,7 @@ export const getErrorSolutions = (code: string, message: string, details?: unkno
       {
         action: 'Review URL/File Content',
         description: 'Ensure the URL or file content is safe and appropriate',
-        icon: 'shield',
+        icon: Shield,
         priority: 'high' as const,
         steps: [
           'Verify the URL is from a trusted source',
@@ -258,7 +259,7 @@ export const getErrorSolutions = (code: string, message: string, details?: unkno
       {
         action: 'Wait and Retry',
         description: 'Wait for the rate limit to reset before trying again',
-        icon: 'clock',
+        icon: Clock,
         priority: 'high',
         steps: [
           'Wait 60 seconds before retrying',
@@ -274,8 +275,12 @@ export const getErrorSolutions = (code: string, message: string, details?: unkno
 };
 
 // Date and time utilities
-export const formatDate = (date: Date | string): string => {
+export const formatDate = (date: Date | string | null | undefined): string => {
+  if (!date) return 'No date';
+
   const d = new Date(date);
+  if (isNaN(d.getTime())) return 'Invalid date';
+
   return d.toLocaleDateString('en-US', {
     weekday: 'short',
     year: 'numeric',
@@ -284,8 +289,12 @@ export const formatDate = (date: Date | string): string => {
   });
 };
 
-export const formatDateTime = (date: Date | string): string => {
+export const formatDateTime = (date: Date | string | null | undefined): string => {
+  if (!date) return 'No date';
+
   const d = new Date(date);
+  if (isNaN(d.getTime())) return 'Invalid date';
+
   return d.toLocaleString('en-US', {
     weekday: 'short',
     year: 'numeric',
@@ -296,9 +305,16 @@ export const formatDateTime = (date: Date | string): string => {
   });
 };
 
-export const formatDuration = (start: Date | string, end: Date | string): string => {
+export const formatDuration = (start: Date | string | null | undefined, end: Date | string | null | undefined): string => {
+  if (!start || !end) return 'Duration unavailable';
+
   const startDate = new Date(start);
   const endDate = new Date(end);
+
+  if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+    return 'Invalid duration';
+  }
+
   const diffTime = Math.abs(endDate.getTime() - startDate.getTime());
   const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
   return `${diffDays} day${diffDays !== 1 ? 's' : ''}`;
