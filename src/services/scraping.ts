@@ -46,7 +46,7 @@ interface RawVenueData {
 interface RawTeacherData {
   name: string;
   bio?: string;
-  specialties?: string[];
+  specializations?: string[];
 }
 
 interface RawMusicianData {
@@ -77,15 +77,437 @@ export interface ScrapingResult {
   };
 }
 
+export interface MultiScrapingResult {
+  success: boolean;
+  results: ScrapingResult[];
+  summary: {
+    total: number;
+    successful: number;
+    failed: number;
+    confidence: number;
+    processingTime: number;
+  };
+  metadata: {
+    urls: string[];
+    timestamp: string;
+    processingTime: number;
+    concurrency: number;
+  };
+}
+
+export interface MultiScrapingOptions {
+  concurrency?: number;
+  timeoutPerUrl?: number;
+  continueOnError?: boolean;
+}
+
+export interface UrlValidationResult {
+  valid: boolean;
+  sanitized: string;
+  error?: string;
+  domain?: string;
+}
+
 export class ScrapingService {
   private readonly CONFIDENCE_THRESHOLD: number;
   private readonly MAX_PAGES: number;
   private readonly TIMEOUT: number;
+  private readonly MAX_URLS_PER_BATCH: number;
+  private readonly DEFAULT_CONCURRENCY: number;
 
   constructor() {
     this.CONFIDENCE_THRESHOLD = parseFloat(process.env.SCRAPING_CONFIDENCE_THRESHOLD || '0.85');
     this.MAX_PAGES = parseInt(process.env.SCRAPING_MAX_PAGES || '15');
     this.TIMEOUT = parseInt(process.env.SCRAPING_TIMEOUT || '30000');
+    this.MAX_URLS_PER_BATCH = parseInt(process.env.MAX_URLS_PER_BATCH || '20');
+    this.DEFAULT_CONCURRENCY = parseInt(process.env.DEFAULT_CONCURRENCY || '3');
+  }
+
+  private validateMultipleUrls(urls: string[]): UrlValidationResult[] {
+    return urls.map(url => this.validateSingleUrl(url));
+  }
+
+  private validateSingleUrl(url: string): UrlValidationResult {
+    try {
+      // Basic URL format validation
+      let sanitized = url.trim();
+
+      // Add protocol if missing
+      if (!sanitized.match(/^https?:\/\//)) {
+        sanitized = `https://${sanitized}`;
+      }
+
+      const urlObj = new URL(sanitized);
+
+      // Security validation - block localhost and private IPs
+      const hostname = urlObj.hostname;
+      if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname.startsWith('192.168.') || hostname.startsWith('10.')) {
+        return {
+          valid: false,
+          sanitized: '',
+          error: 'Invalid hostname: localhost and private IPs are not allowed'
+        };
+      }
+
+      // Ensure it's HTTP/HTTPS
+      if (!['http:', 'https:'].includes(urlObj.protocol)) {
+        return {
+          valid: false,
+          sanitized: '',
+          error: 'Only HTTP and HTTPS protocols are supported'
+        };
+      }
+
+      return {
+        valid: true,
+        sanitized: sanitized,
+        domain: hostname
+      };
+    } catch (error) {
+      return {
+        valid: false,
+        sanitized: '',
+        error: `Invalid URL format: ${error instanceof Error ? error.message : 'Unknown error'}`
+      };
+    }
+  }
+
+  private groupUrlsByDomain(urls: string[]): Map<string, string[]> {
+    const domainGroups = new Map<string, string[]>();
+
+    urls.forEach(url => {
+      const validation = this.validateSingleUrl(url);
+      if (validation.valid && validation.domain) {
+        if (!domainGroups.has(validation.domain)) {
+          domainGroups.set(validation.domain, []);
+        }
+        domainGroups.get(validation.domain)!.push(validation.sanitized);
+      }
+    });
+
+    return domainGroups;
+  }
+
+  private async processUrlBatch(
+    urls: string[],
+    concurrency: number,
+    sessionId?: string,
+    options?: MultiScrapingOptions
+  ): Promise<ScrapingResult[]> {
+    const results: ScrapingResult[] = [];
+
+    // Process URLs in batches to respect concurrency limits
+    for (let i = 0; i < urls.length; i += concurrency) {
+      const batch = urls.slice(i, i + concurrency);
+      const batchPromises = batch.map(async (url, index) => {
+        const globalIndex = i + index;
+
+        // Send progress update for current URL
+        if (sessionId) {
+          this.sendBatchProgressUpdate(sessionId, {
+            stage: 'scraping',
+            currentUrl: url,
+            currentUrlIndex: globalIndex,
+            totalUrls: urls.length,
+            completedUrls: results.length,
+            failedUrls: results.filter(r => !r.success).length,
+            results: []
+          });
+        }
+
+        try {
+          const timeout = options?.timeoutPerUrl || this.TIMEOUT;
+          const result = await Promise.race([
+            this.scrapeFestivalUrl(url, sessionId),
+            new Promise<ScrapingResult>((_, reject) =>
+              setTimeout(() => reject(new Error(`Timeout after ${timeout}ms`)), timeout)
+            )
+          ]);
+
+          return result;
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          logger.warn(`Failed to scrape URL: ${url}`, { error: errorMessage });
+
+          return {
+            success: false,
+            confidence: 0,
+            error: errorMessage,
+            metadata: {
+              url,
+              timestamp: new Date().toISOString(),
+              processingTime: 0,
+              pagesExplored: 0
+            }
+          };
+        }
+      });
+
+      // Wait for current batch to complete
+      const batchResults = await Promise.allSettled(batchPromises);
+
+      batchResults.forEach(settledResult => {
+        if (settledResult.status === 'fulfilled') {
+          results.push(settledResult.value);
+        } else {
+          // Handle rejected promises
+          const error = settledResult.reason;
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          logger.error('URL processing failed', { error: errorMessage });
+
+          results.push({
+            success: false,
+            confidence: 0,
+            error: errorMessage,
+            metadata: {
+              url: 'unknown',
+              timestamp: new Date().toISOString(),
+              processingTime: 0,
+              pagesExplored: 0
+            }
+          });
+        }
+      });
+
+      // Small delay between batches to be respectful
+      if (i + concurrency < urls.length) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
+
+    return results;
+  }
+
+  private sendBatchProgressUpdate(sessionId: string, progress: any) {
+    try {
+      const batchProgress = {
+        type: 'batch-scraping' as const,
+        timestamp: new Date().toISOString(),
+        sessionId,
+        ...progress
+      };
+
+      websocketService.sendScrapingProgress(sessionId, batchProgress);
+    } catch (error) {
+      logger.warn('Failed to send batch WebSocket progress update', {
+        sessionId,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async scrapeMultipleUrls(urls: string[], sessionId?: string, options?: MultiScrapingOptions): Promise<MultiScrapingResult> {
+    const startTime = Date.now();
+    const timer = performanceService.createTimer('scrape_multiple_urls');
+    timer.start();
+
+    try {
+      // Send initial progress update
+      if (sessionId) {
+        this.sendBatchProgressUpdate(sessionId, {
+          stage: 'validating',
+          currentUrlIndex: 0,
+          totalUrls: urls.length,
+          completedUrls: 0,
+          failedUrls: 0,
+          results: []
+        });
+      }
+
+      // Validate all URLs first
+      const validations = this.validateMultipleUrls(urls);
+      const validUrls = validations
+        .filter(v => v.valid)
+        .map(v => v.sanitized);
+
+      const invalidUrls = validations.filter(v => !v.valid);
+
+      // Log validation results
+      if (invalidUrls.length > 0) {
+        logger.warn('Some URLs failed validation', {
+          totalUrls: urls.length,
+          validUrls: validUrls.length,
+          invalidUrls: invalidUrls.map(v => ({ url: v.sanitized, error: v.error }))
+        });
+      }
+
+      // Check if we have any valid URLs
+      if (validUrls.length === 0) {
+        const error = 'No valid URLs provided';
+        logger.error('URL validation failed', { error, validations });
+
+        return {
+          success: false,
+          results: [],
+          summary: {
+            total: urls.length,
+            successful: 0,
+            failed: urls.length,
+            confidence: 0,
+            processingTime: Date.now() - startTime
+          },
+          metadata: {
+            urls,
+            timestamp: new Date().toISOString(),
+            processingTime: Date.now() - startTime,
+            concurrency: options?.concurrency || this.DEFAULT_CONCURRENCY
+          }
+        };
+      }
+
+      // Check URL limit
+      if (validUrls.length > this.MAX_URLS_PER_BATCH) {
+        logger.warn(`URL count exceeds maximum limit`, {
+          urlCount: validUrls.length,
+          maxLimit: this.MAX_URLS_PER_BATCH
+        });
+
+        return {
+          success: false,
+          results: [],
+          summary: {
+            total: urls.length,
+            successful: 0,
+            failed: urls.length,
+            confidence: 0,
+            processingTime: Date.now() - startTime
+          },
+          metadata: {
+            urls,
+            timestamp: new Date().toISOString(),
+            processingTime: Date.now() - startTime,
+            concurrency: options?.concurrency || this.DEFAULT_CONCURRENCY
+          }
+        };
+      }
+
+      // Remove duplicates while preserving order
+      const uniqueUrls = [...new Set(validUrls)];
+
+      if (uniqueUrls.length < validUrls.length) {
+        logger.info('Removed duplicate URLs', {
+          originalCount: validUrls.length,
+          uniqueCount: uniqueUrls.length
+        });
+      }
+
+      const concurrency = Math.min(options?.concurrency || this.DEFAULT_CONCURRENCY, uniqueUrls.length);
+
+      logger.info('Starting multi-URL scraping', {
+        totalUrls: uniqueUrls.length,
+        concurrency,
+        processingTime: Date.now() - startTime
+      });
+
+      // Send scraping started progress
+      if (sessionId) {
+        this.sendBatchProgressUpdate(sessionId, {
+          stage: 'scraping',
+          currentUrl: uniqueUrls[0] || '',
+          currentUrlIndex: 0,
+          totalUrls: uniqueUrls.length,
+          completedUrls: 0,
+          failedUrls: 0,
+          results: []
+        });
+      }
+
+      // Process URLs with controlled concurrency
+      const results = await this.processUrlBatch(uniqueUrls, concurrency, sessionId, options);
+
+      // Calculate summary statistics
+      const successfulResults = results.filter(r => r.success);
+      const failedResults = results.filter(r => !r.success);
+      const avgConfidence = successfulResults.length > 0
+        ? successfulResults.reduce((sum, r) => sum + r.confidence, 0) / successfulResults.length
+        : 0;
+
+      const processingTime = Date.now() - startTime;
+
+      // Send completion progress
+      if (sessionId) {
+        this.sendBatchProgressUpdate(sessionId, {
+          stage: 'completed',
+          currentUrl: '',
+          currentUrlIndex: uniqueUrls.length,
+          totalUrls: uniqueUrls.length,
+          completedUrls: successfulResults.length,
+          failedUrls: failedResults.length,
+          results
+        });
+      }
+
+      logger.info('Multi-URL scraping completed', {
+        totalUrls: uniqueUrls.length,
+        successful: successfulResults.length,
+        failed: failedResults.length,
+        avgConfidence,
+        processingTime
+      });
+
+      timer.stop();
+
+      return {
+        success: failedResults.length === 0 || options?.continueOnError === true,
+        results,
+        summary: {
+          total: uniqueUrls.length,
+          successful: successfulResults.length,
+          failed: failedResults.length,
+          confidence: avgConfidence,
+          processingTime
+        },
+        metadata: {
+          urls: uniqueUrls,
+          timestamp: new Date().toISOString(),
+          processingTime,
+          concurrency
+        }
+      };
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const processingTime = Date.now() - startTime;
+
+      logger.error('Multi-URL scraping failed', {
+        error: errorMessage,
+        urls,
+        processingTime
+      });
+
+      timer.stop();
+
+      // Send error progress
+      if (sessionId) {
+        this.sendBatchProgressUpdate(sessionId, {
+          stage: 'error',
+          currentUrl: '',
+          currentUrlIndex: 0,
+          totalUrls: urls.length,
+          completedUrls: 0,
+          failedUrls: urls.length,
+          results: []
+        });
+      }
+
+      return {
+        success: false,
+        results: [],
+        summary: {
+          total: urls.length,
+          successful: 0,
+          failed: urls.length,
+          confidence: 0,
+          processingTime
+        },
+        metadata: {
+          urls,
+          timestamp: new Date().toISOString(),
+          processingTime,
+          concurrency: options?.concurrency || this.DEFAULT_CONCURRENCY
+        }
+      };
+    }
   }
 
   async scrapeFestivalUrl(url: string, sessionId?: string): Promise<ScrapingResult> {
@@ -384,6 +806,20 @@ export class ScrapingService {
       .sort((a, b) => b.priority - a.priority)
       .slice(0, this.MAX_PAGES - 1);
 
+    // Debug logging for discovered links
+    logger.info('Links discovered for exploration', {
+      totalLinks: links.length,
+      bioLinks: links.filter(link =>
+        link.url.includes('instructor') ||
+        link.url.includes('teacher') ||
+        link.url.includes('artist') ||
+        link.url.includes('musician') ||
+        link.url.includes('bio') ||
+        link.url.includes('staff')
+      ).map(link => ({ url: link.url, priority: link.priority })),
+      highPriorityLinks: links.filter(link => link.priority >= 8).map(link => ({ url: link.url, priority: link.priority }))
+    });
+
     const results = await Promise.allSettled(
       links.map(async (link) => {
         try {
@@ -409,7 +845,7 @@ export class ScrapingService {
   private extractRelevantLinks(content: string, baseUrl: URL): Array<{ url: string; priority: number }> {
     const keywords: Array<{ terms: string[]; priority: number }> = [
       { terms: ['program', 'schedule', 'timetable'], priority: 10 },
-      { terms: ['teacher', 'instructor', 'artist', 'lineup'], priority: 9 },
+      { terms: ['teacher', 'instructor', 'artist', 'musician', 'lineup'], priority: 9 },
       { terms: ['register', 'ticket', 'booking', 'price'], priority: 8 },
       { terms: ['venue', 'location', 'accommodation'], priority: 7 },
       { terms: ['about', 'info', 'information'], priority: 6 },
@@ -447,7 +883,7 @@ export class ScrapingService {
       }
 
       if (href.includes('program') || href.includes('schedule')) priority += 2;
-      if (href.includes('teacher') || href.includes('artist')) priority += 2;
+      if (href.includes('teacher') || href.includes('artist') || href.includes('musician')) priority += 2;
       if (href.includes('register') || href.includes('ticket')) priority += 1;
 
       if (!links.some((link) => link.url === absoluteUrl)) {
@@ -497,6 +933,13 @@ export class ScrapingService {
     try {
       // Preprocess content for AI consumption
       const processedContent = this.preprocessContent(content);
+
+      // Debug logging for preprocessing
+      logger.info('Content preprocessing completed', {
+        originalLength: content.length,
+        processedLength: processedContent.length,
+        approach: 'simplified-ai-focused'
+      });
 
       // Truncate content if too long (Claude context limits)
       const truncatedContent = processedContent.length > 100000
@@ -579,12 +1022,78 @@ export class ScrapingService {
         festivalData.prices = festivalData.prices || [];
         festivalData.tags = festivalData.tags || [];
 
+        // Apply bio validation to prevent hallucinations
+        const originalTeachers = [...festivalData.teachers];
+        const originalMusicians = [...festivalData.musicians];
+
+        festivalData.teachers = festivalData.teachers.map(teacher => {
+          const originalBio = teacher.bio;
+          const processedBio = this.validateBio(teacher.bio, teacher.name);
+
+          // Log processing results (tutte le bio vengono mantenute)
+          if (originalBio) {
+            logger.info('Teacher bio processed', {
+              name: teacher.name,
+              originalLength: originalBio.length,
+              processedLength: processedBio?.length || 0,
+              preview: processedBio?.substring(0, 100) + (processedBio && processedBio.length > 100 ? '...' : '')
+            });
+          }
+
+          return {
+            ...teacher,
+            bio: processedBio || originalBio // Mantieni sempre la bio originale
+          };
+        });
+
+        festivalData.musicians = festivalData.musicians.map(musician => {
+          const originalBio = musician.bio;
+          const processedBio = this.validateBio(musician.bio, musician.name);
+
+          // Log processing results (tutte le bio vengono mantenute)
+          if (originalBio) {
+            logger.info('Musician bio processed', {
+              name: musician.name,
+              originalLength: originalBio.length,
+              processedLength: processedBio?.length || 0,
+              preview: processedBio?.substring(0, 100) + (processedBio && processedBio.length > 100 ? '...' : '')
+            });
+          }
+
+          return {
+            ...musician,
+            bio: processedBio || originalBio // Mantieni sempre la bio originale
+          };
+        });
+
+        // Calculate bio statistics
+        const teachersWithBio = festivalData.teachers.filter(t => t.bio && t.bio.length > 20).length;
+        const musiciansWithBio = festivalData.musicians.filter(m => m.bio && m.bio.length > 20).length;
+
         logger.debug('Structured festival data parsed', {
           name: festivalData.name,
           teachersCount: festivalData.teachers.length,
           musiciansCount: festivalData.musicians.length,
           pricesCount: festivalData.prices.length,
+          teachersWithBio,
+          musiciansWithBio,
+          bioQuality: {
+            teachers: `${teachersWithBio}/${festivalData.teachers.length}`,
+            musicians: `${musiciansWithBio}/${festivalData.musicians.length}`
+          },
           confidence,
+        });
+
+        // Additional bio extraction logging
+        logger.info('Bio extraction results', {
+          teachersWithBio,
+          musiciansWithBio,
+          totalTeachers: festivalData.teachers.length,
+          totalMusicians: festivalData.musicians.length,
+          successRate: {
+            teachers: festivalData.teachers.length > 0 ? (teachersWithBio / festivalData.teachers.length * 100).toFixed(1) + '%' : '0%',
+            musicians: festivalData.musicians.length > 0 ? (musiciansWithBio / festivalData.musicians.length * 100).toFixed(1) + '%' : '0%'
+          }
         });
       } catch (parseError) {
         logger.error('Failed to parse structured JSON', {
@@ -804,8 +1313,8 @@ export class ScrapingService {
       teachers: Array.isArray(rawData.teachers) ? rawData.teachers.slice(0, 20).map((teacher: RawTeacherData) => ({
         name: sanitizeString(teacher.name) || 'Unknown Teacher',
         bio: sanitizeString(teacher.bio),
-        specialties: Array.isArray(teacher.specialties) ?
-          teacher.specialties.slice(0, 10).map((s: unknown) => sanitizeString(s)).filter((s): s is string => Boolean(s)) : [],
+        specializations: Array.isArray(teacher.specializations) ?
+          teacher.specializations.slice(0, 10).map((s: unknown) => sanitizeString(s)).filter((s): s is string => Boolean(s)) : [],
       })) : [],
       musicians: Array.isArray(rawData.musicians) ? rawData.musicians.slice(0, 20).map((musician: RawMusicianData) => ({
         name: sanitizeString(musician.name) || 'Unknown Musician',
@@ -884,39 +1393,72 @@ export class ScrapingService {
   }
 
   private preprocessContent(content: string): string {
-    // Remove excessive whitespace
-    let processed = content.replace(/\s+/g, ' ');
+    // Simple preprocessing: clean HTML but preserve structure for AI
+    let processed = content;
 
-    // Remove script and style tags content
+    // Remove script and style tags completely
     processed = processed.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
     processed = processed.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
 
     // Remove HTML comments
     processed = processed.replace(/<!--[\s\S]*?-->/g, '');
 
-    // Remove navigation, footer, header elements (basic pattern)
+    // Remove navigation, footer, header elements
     processed = processed.replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, '');
     processed = processed.replace(/<footer[^>]*>[\s\S]*?<\/footer>/gi, '');
     processed = processed.replace(/<header[^>]*>[\s\S]*?<\/header>/gi, '');
 
-    // Normalize HTML structure
+    // Convert structural HTML to readable format but keep some semantic structure
+    processed = processed.replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, '\n=== MAIN TITLE: $1 ===\n');
+    processed = processed.replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, '\n== SECTION: $1 ==\n');
+    processed = processed.replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, '\n--- SUBSECTION: $1 ---\n');
+
+    // Handle common bio/musician/instructor section patterns
+    processed = processed.replace(/<div[^>]*(?:class|id)[^>]*=\s*["'][^"']*(?:musician|artist|instructor|teacher|bio|profile|staff|faculty|lineup)[^"']*["'][^>]*>/gi, '\n=== BIO SECTION ===\n');
+    processed = processed.replace(/<section[^>]*(?:class|id)[^>]*=\s*["'][^"']*(?:musician|artist|instructor|teacher|bio|profile|staff|faculty|lineup)[^"']*["'][^>]*>/gi, '\n=== BIO SECTION ===\n');
+    processed = processed.replace(/<article[^>]*(?:class|id)[^>]*=\s*["'][^"']*(?:musician|artist|instructor|teacher|bio|profile|staff|faculty|lineup)[^"']*["'][^>]*>/gi, '\n=== BIO SECTION ===\n');
+
+    // Mark individual person sections
+    processed = processed.replace(/<h[4-6][^>]*>([^<]*(?:band|musician|artist|instructor|teacher|dj|performer)[^<]*)<\/h[4-6]>/gi, '\n--- PERSON: $1 ---\n');
+
+    // Convert paragraphs and breaks to newlines
     processed = processed.replace(/<br\s*\/?>/gi, '\n');
     processed = processed.replace(/<\/p>/gi, '\n');
     processed = processed.replace(/<\/div>/gi, '\n');
-    processed = processed.replace(/<\/h[1-6]>/gi, '\n');
 
-    // Remove remaining HTML tags but preserve content
+    // Remove remaining HTML tags but keep content
     processed = processed.replace(/<[^>]+>/g, '');
 
-    // Clean up excessive newlines and spaces
-    processed = processed.replace(/\n\s*\n/g, '\n');
-    processed = processed.replace(/^\s+|\s+$/gm, '');
-
-    // Ensure proper spacing around text
-    processed = processed.replace(/([a-z])([A-Z])/g, '$1 $2');
+    // Clean up whitespace and formatting
+    processed = processed.replace(/\n\s*\n\s*\n/g, '\n\n'); // Reduce multiple newlines
+    processed = processed.replace(/^\s+|\s+$/gm, ''); // Trim lines
+    processed = processed.replace(/([a-z])([A-Z])/g, '$1 $2'); // Fix spacing
 
     return processed.trim();
   }
+
+  private validateBio(bio: string | undefined, name: string): string | undefined {
+    // Rimuoviamo tutta la validazione per permettere a tutte le bio di raggiungere il database
+    if (!bio) {
+      logger.debug('No bio provided', { name });
+      return undefined;
+    }
+
+    // Solo troncamento per bio molto lunghe (più di 5000 caratteri)
+    if (bio.length > 5000) {
+      logger.debug('Truncating very long bio', { name, originalLength: bio.length });
+      return bio.substring(0, 5000);
+    }
+
+    logger.debug('Bio preserved without validation', {
+      name,
+      length: bio.length,
+      preview: bio.substring(0, 100) + (bio.length > 100 ? '...' : '')
+    });
+
+    return bio;
+  }
+
 
   private validateJsonSchema(data: RawFestivalData): { isValid: boolean; errors: string[] } {
     const errors: string[] = [];

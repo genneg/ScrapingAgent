@@ -100,7 +100,7 @@ export function DataPreview({
   const addTeacher = useCallback(() => {
     setEditedData(prev => ({
       ...prev,
-      teachers: [...(prev.teachers || []), { name: '', specialties: [], bio: '' }]
+      teachers: [...(prev.teachers || []), { name: '', specializations: [], bio: '' }]
     }));
   }, []);
 
@@ -600,30 +600,32 @@ export function DataPreview({
                         )}
                       </div>
 
-                      {teacher.bio && (
+                      {(teacher.bio || isEditing) && (
                         <div>
                           <Label className="label-high-contrast">Bio</Label>
                           {isEditing ? (
                             <Textarea
-                              value={teacher.bio}
+                              value={teacher.bio || ''}
                               onChange={(e) => handleTeacherChange(index, 'bio', e.target.value)}
                               rows={3}
-                              placeholder="Teacher biography..."
+                              placeholder="Enter teacher biography..."
                               className="input-high-contrast"
                             />
                           ) : (
-                            <p className="text-sm text-muted-high-contrast line-clamp-3">{teacher.bio}</p>
+                            <p className="text-sm text-muted-high-contrast line-clamp-3">
+                              {teacher.bio || 'No biography provided'}
+                            </p>
                           )}
                         </div>
                       )}
 
-                      {teacher.specialties && teacher.specialties.length > 0 && (
+                      {teacher.specializations && teacher.specializations.length > 0 && (
                         <div>
                           <Label className="label-high-contrast">Specialties</Label>
                           <div className="flex flex-wrap gap-1">
-                            {teacher.specialties.map((specialty, idx) => (
+                            {teacher.specializations.map((specialization, idx) => (
                               <Badge key={idx} variant="outline" className="badge-high-contrast">
-                                {specialty}
+                                {specialization}
                               </Badge>
                             ))}
                           </div>
@@ -689,19 +691,21 @@ export function DataPreview({
                         )}
                       </div>
 
-                      {musician.bio && (
+                      {(musician.bio || isEditing) && (
                         <div>
                           <Label className="label-high-contrast">Bio</Label>
                           {isEditing ? (
                             <Textarea
-                              value={musician.bio}
+                              value={musician.bio || ''}
                               onChange={(e) => handleMusicianChange(index, 'bio', e.target.value)}
                               rows={3}
-                              placeholder="Musician biography..."
+                              placeholder="Enter musician biography..."
                               className="input-high-contrast"
                             />
                           ) : (
-                            <p className="text-sm text-muted-high-contrast line-clamp-3">{musician.bio}</p>
+                            <p className="text-sm text-muted-high-contrast line-clamp-3">
+                              {musician.bio || 'No biography provided'}
+                            </p>
                           )}
                         </div>
                       )}

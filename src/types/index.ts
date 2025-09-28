@@ -12,7 +12,10 @@ export interface VenueData {
 export interface TeacherData {
   name: string;
   bio?: string;
-  specialties?: string[];
+  specializations?: string[];
+  website?: string;
+  imageUrl?: string;
+  aiRelevanceScore?: number;
 }
 
 export interface MusicianData {
@@ -20,6 +23,8 @@ export interface MusicianData {
   bio?: string;
   genre?: string[];
   instruments?: string[];
+  website?: string;
+  imageUrl?: string;
 }
 
 export interface PriceData {
@@ -56,4 +61,7 @@ export interface FestivalData {
   phone?: string;
   registrationUrl?: string;
   sourceUrl?: string;
+  imageUrl?: string;
+  city?: string;
+  country?: string;
 }
